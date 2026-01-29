@@ -1,6 +1,6 @@
 [package]
 name = "influence"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 authors = ["Ying Kit WONG"]
 description = "A Rust CLI tool for downloading HuggingFace models and running local LLM inference"
@@ -12,8 +12,8 @@ readme = "README.md"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-hf-hub = "0.3"
-tokio = { version = "1.42", features = ["full"] }
+hf-hub = "0.4"
+tokio = { version = "1.49", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -34,7 +34,7 @@ base64 = "0.22"
 dotenvy = "0.15"
 chrono = "0.4"
 termimad = "0.30"
-syntect = "5.2"
+syntect = "5.3"
 
 # Web server dependencies
 axum = "0.7"

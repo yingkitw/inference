@@ -133,6 +133,8 @@ influence generate "Write a technical introduction to vector databases" \
   - `/help`, `/clear`, `/save`, `/load`, `/history`, `/set`, `/quit`
   - Session save/load (JSON format)
   - Runtime parameter adjustment
+- **CLI UX improvements with streaming markdown rendering and syntax highlighting**
+- **Configuration management with `config` command**
 - Web API server (REST + SSE streaming)
 - Top-k, top-p sampling and temperature control
 - Repetition penalty
@@ -671,6 +673,47 @@ Sessions are saved as JSON with complete conversation history:
 - `--session <FILE>` - Load chat session from file on startup
 - `--save-on-exit <FILE>` - Auto-save session to file on exit
 
+### `config` - Show Configuration Settings
+
+```bash
+influence config
+```
+
+**Examples:**
+
+```bash
+# Show all current configuration settings
+influence config
+```
+
+**What it displays:**
+
+The `config` command shows all current configuration settings from environment variables and `.env` file:
+
+- **Model Settings**
+  - Model path
+  - Output directory
+  - Mirror URL
+
+- **Generation Parameters**
+  - Temperature
+  - Top-p (nucleus sampling)
+  - Top-k sampling
+  - Repeat penalty
+  - Max tokens
+
+- **Device Settings**
+  - Compute device (auto/cpu/metal/cuda)
+  - Device index
+
+- **Server Settings**
+  - Port
+
+It also displays a helpful reference of all available environment variables that can be set in your `.env` file.
+
+**Options:**
+None (takes no arguments)
+
 ## Recommended Models
 
 ### For Testing & Development
@@ -862,10 +905,26 @@ cargo test
 
 ## Roadmap
 
-- [x] Quantized model support (GGUF) - **Partially implemented**: Detection and metadata parsing working
-- [ ] Full GGUF inference engine integration
+### Completed
+- [x] Streaming markdown renderer with syntax highlighting for code blocks
+- [x] CLI UX improvements with formatted output
+- [x] Configuration management with `config` command
+- [x] Security hardening and retry logic
+- [x] Comprehensive API documentation
+- [x] Model management with `list` and `deploy` commands
+- [x] Interactive chat mode with slash commands and session persistence
+- [x] GGUF model detection and metadata parsing
+- [x] Embeddings support (BERT encoder-only models)
+- [x] Ollama-compatible API endpoints
+- [x] Metal GPU warmup for reduced first-token latency
+
+### In Progress
+- [ ] Full GGUF inference engine integration (detection working, inference in development)
+
+### Planned
 - [ ] Batch generation
 - [ ] More quantization formats support
+- [ ] Session-based KV cache reuse for multi-turn conversations
 
 ## Contributing
 
