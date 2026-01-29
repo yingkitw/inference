@@ -16,7 +16,6 @@
 
 ## Ready to Test
 - [ ] Test download command with actual HuggingFace mirror
-- [ ] Test generate command with actual WatsonX API credentials
 
 ## Future Enhancements
 - [ ] Add integration tests with mock server

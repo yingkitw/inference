@@ -26,6 +26,9 @@ pub async fn download_model(
         .user_agent("influence/0.1.0")
         .build()?;
 
+    // Check if model exists before downloading
+    check_model_exists(&client, mirror_url, model).await?;
+
     let files_to_download = get_model_files(model);
 
     for file in files_to_download {
@@ -55,6 +58,38 @@ fn get_output_dir(model: &str, output: Option<&Path>) -> Result<PathBuf> {
 
     let model_name = model.replace('/', "_");
     Ok(dirs.data_dir().join("models").join(model_name))
+}
+
+async fn check_model_exists(client: &Client, mirror_url: &str, model: &str) -> Result<()> {
+    // Try to fetch the model info to check if it exists
+    let info_url = format!("{}/api/models/{}", mirror_url, model);
+
+    let response = client
+        .head(&info_url)
+        .send()
+        .await
+        .map_err(|e| InfluenceError::DownloadError(format!("Failed to check model availability: {}", e)))?;
+
+    if response.status().is_success() {
+        return Ok(());
+    }
+
+    // Also try checking if config.json exists (some mirrors don't support the API endpoint)
+    let config_url = format!("{}/{}/resolve/main/config.json", mirror_url, model);
+    let response = client
+        .head(&config_url)
+        .send()
+        .await
+        .map_err(|e| InfluenceError::DownloadError(format!("Failed to check model availability: {}", e)))?;
+
+    if !response.status().is_success() {
+        return Err(InfluenceError::DownloadError(format!(
+            "Model '{}' not found. Please verify the model name.\n\nHint: Model names should be in the format 'org/model-name' (e.g., 'bert-base-uncased', 'google/flan-t5-small').\nYou can search for models at https://hf-mirror.com or https://huggingface.co/models",
+            model
+        )));
+    }
+
+    Ok(())
 }
 
 fn get_model_files(model: &str) -> Vec<&'static str> {
