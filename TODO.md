@@ -100,6 +100,7 @@
 - [x] Add model validation after download
 - [x] Improve CLI output UX with markdown rendering and syntax highlighting
 - [x] Add config command to display configuration settings in formatted table
+- [x] Stream-render markdown output for generate with fenced code-block syntax highlighting
 
 ### Web API
 - [ ] Document REST/SSE endpoints and example curl commands

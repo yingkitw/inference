@@ -319,6 +319,7 @@ pub async fn generate(
 
     let mut local_model = LocalModel::load(config).await?;
     let formatter = crate::output::OutputFormatter::new();
+    let mut stream_md = crate::output::MarkdownStreamRenderer::new();
     formatter.print_header("Local Generation");
 
     let effective_prompt = match system {
@@ -338,7 +339,9 @@ pub async fn generate(
     // Generate with early stopping if model starts a new turn
     use std::sync::atomic::{AtomicBool, Ordering};
     let should_stop = AtomicBool::new(false);
-    let mut output_buffer = String::new();
+
+    let mut code_hi: Option<crate::output::CodeHighlighter<'_>> = None;
+    let mut code_open = false;
 
     local_model.generate_stream_with(&effective_prompt, max_tokens, temperature, |piece| {
         if should_stop.load(Ordering::Relaxed) {
@@ -351,18 +354,69 @@ pub async fn generate(
             return Ok(());
         }
 
-        output_buffer.push_str(&piece);
-        print!("{}", piece);
-        io::stdout().flush().map_err(|e| InfluenceError::LocalModelError(format!("Failed to flush stdout: {}", e)))
+        stream_md.push_with(
+            &piece,
+            |text| {
+                print!("{}", text);
+            },
+            |ev| {
+                match ev {
+                    crate::output::CodeStreamEvent::Start { language } => {
+                        if !code_open {
+                            println!();
+                            code_open = true;
+                        }
+                        code_hi = Some(formatter.code_highlighter(language));
+                    }
+                    crate::output::CodeStreamEvent::Chunk { language: _, code } => {
+                        if let Some(h) = code_hi.as_mut() {
+                            h.write(code);
+                        }
+                    }
+                    crate::output::CodeStreamEvent::End => {
+                        if let Some(h) = code_hi.as_mut() {
+                            h.finish_line();
+                        }
+                        code_hi = None;
+                        code_open = false;
+                        println!();
+                    }
+                }
+            },
+        );
+
+        Ok(())
     }).await?;
 
-    println!("\n");
-    
-    // Render the complete output with markdown formatting
-    if output_buffer.contains("```") {
-        println!("\n--- Formatted Output ---\n");
-        formatter.print_markdown(&output_buffer);
-    }
+    stream_md.finish_with(
+        |text| print!("{}", text),
+        |ev| {
+            match ev {
+                crate::output::CodeStreamEvent::Start { language } => {
+                    if !code_open {
+                        println!();
+                        code_open = true;
+                    }
+                    code_hi = Some(formatter.code_highlighter(language));
+                }
+                crate::output::CodeStreamEvent::Chunk { language: _, code } => {
+                    if let Some(h) = code_hi.as_mut() {
+                        h.write(code);
+                    }
+                }
+                crate::output::CodeStreamEvent::End => {
+                    if let Some(h) = code_hi.as_mut() {
+                        h.finish_line();
+                    }
+                    code_hi = None;
+                    code_open = false;
+                    println!();
+                }
+            }
+        },
+    );
+
+    println!();
     
     formatter.print_success("Generation complete");
 

@@ -1,6 +1,6 @@
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style, ThemeSet};
-use syntect::parsing::SyntaxSet;
+use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 use termimad::{MadSkin, crossterm::style::Color};
 
@@ -29,6 +29,22 @@ impl OutputFormatter {
             skin,
             syntax_set,
             theme_set,
+        }
+    }
+
+    pub fn print_markdown_fragment(&self, text: &str) {
+        let looks_like_markdown = text.contains("**")
+            || text.contains("__")
+            || text.contains('`')
+            || text.starts_with('#')
+            || text.starts_with("- ")
+            || text.contains("\n#")
+            || text.contains("\n- ");
+
+        if looks_like_markdown {
+            self.skin.print_text(text);
+        } else {
+            print!("{}", text);
         }
     }
     
@@ -83,29 +99,72 @@ impl OutputFormatter {
     }
     
     pub fn print_code(&self, code: &str, language: &str) {
-        let syntax = self.syntax_set
-            .find_syntax_by_extension(language)
-            .or_else(|| self.syntax_set.find_syntax_by_name(language))
-            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
-        
-        let theme = &self.theme_set.themes["base16-ocean.dark"];
-        let mut highlighter = HighlightLines::new(syntax, theme);
-        
-        // Print language tag if available
-        if !language.is_empty() {
-            println!("┌─ {} ─", language);
+        let mut h = self.code_highlighter(language);
+        h.write(code);
+        h.finish_line();
+    }
+
+    pub fn code_highlighter<'a>(&'a self, language: &str) -> CodeHighlighter<'a> {
+        let syntax = self.resolve_syntax(language);
+        let theme = self.resolve_theme();
+        CodeHighlighter {
+            syntax_set: &self.syntax_set,
+            highlighter: HighlightLines::new(syntax, theme),
+        }
+    }
+
+    fn resolve_syntax(&self, language: &str) -> &SyntaxReference {
+        let lang = language.trim();
+        if lang.is_empty() {
+            return self.syntax_set.find_syntax_plain_text();
+        }
+
+        let lang_lc = lang.to_ascii_lowercase();
+        let ext = match lang_lc.as_str() {
+            "py" | "python" => "py",
+            "rs" | "rust" => "rs",
+            "js" | "javascript" => "js",
+            "ts" | "typescript" => "ts",
+            "sh" | "bash" | "shell" => "sh",
+            "yml" | "yaml" => "yml",
+            "md" | "markdown" => "md",
+            "json" => "json",
+            "toml" => "toml",
+            _ => lang_lc.as_str(),
+        };
+
+        self.syntax_set
+            .find_syntax_by_extension(ext)
+            .or_else(|| self.syntax_set.find_syntax_by_extension(&lang_lc))
+            .or_else(|| {
+                self.syntax_set
+                    .syntaxes()
+                    .iter()
+                    .find(|s| s.name.to_ascii_lowercase() == lang_lc)
+            })
+            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text())
+    }
+
+    fn resolve_theme(&self) -> &syntect::highlighting::Theme {
+        let theme_name = if self.theme_set.themes.contains_key("Dark+ (default dark)") {
+            "Dark+ (default dark)"
+        } else if self.theme_set.themes.contains_key("Monokai Extended") {
+            "Monokai Extended"
+        } else if self.theme_set.themes.contains_key("base16-ocean.dark") {
+            "base16-ocean.dark"
         } else {
-            println!("┌─ code ─");
-        }
-        
-        for line in LinesWithEndings::from(code) {
-            let ranges: Vec<(Style, &str)> = highlighter
-                .highlight_line(line, &self.syntax_set)
-                .unwrap_or_default();
-            let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
-            print!("│ {}", escaped);
-        }
-        println!("└─────");
+            self.theme_set
+                .themes
+                .keys()
+                .next()
+                .map(|s| s.as_str())
+                .unwrap_or("base16-ocean.dark")
+        };
+
+        self.theme_set
+            .themes
+            .get(theme_name)
+            .unwrap_or_else(|| &self.theme_set.themes["base16-ocean.dark"])
     }
     
     pub fn print_header(&self, text: &str) {
@@ -204,6 +263,211 @@ r#"### {}
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamState {
+    Text,
+    Lang,
+    Code,
+}
+
+pub enum CodeStreamEvent<'a> {
+    Start { language: &'a str },
+    Chunk { language: &'a str, code: &'a str },
+    End,
+}
+
+pub struct CodeHighlighter<'a> {
+    syntax_set: &'a SyntaxSet,
+    highlighter: HighlightLines<'a>,
+}
+
+impl<'a> CodeHighlighter<'a> {
+    pub fn write(&mut self, code: &str) {
+        for line in LinesWithEndings::from(code) {
+            let ranges: Vec<(Style, &str)> = self
+                .highlighter
+                .highlight_line(line, self.syntax_set)
+                .unwrap_or_default();
+            let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
+            print!("{}", escaped);
+        }
+        print!("\x1b[0m");
+    }
+
+    pub fn finish_line(&mut self) {
+        println!();
+    }
+}
+
+pub struct MarkdownStreamRenderer {
+    state: StreamState,
+    buffer: String,
+    lang: String,
+    code: String,
+}
+
+impl MarkdownStreamRenderer {
+    pub fn new() -> Self {
+        Self {
+            state: StreamState::Text,
+            buffer: String::new(),
+            lang: String::new(),
+            code: String::new(),
+        }
+    }
+
+    pub fn push_with<FText, FCode>(&mut self, chunk: &str, mut on_text: FText, mut on_code: FCode)
+    where
+        FText: FnMut(&str),
+        FCode: FnMut(CodeStreamEvent<'_>),
+    {
+        self.buffer.push_str(chunk);
+        self.drain(&mut on_text, &mut on_code);
+    }
+
+    pub fn finish_with<FText, FCode>(&mut self, mut on_text: FText, mut on_code: FCode)
+    where
+        FText: FnMut(&str),
+        FCode: FnMut(CodeStreamEvent<'_>),
+    {
+        self.drain(&mut on_text, &mut on_code);
+
+        match self.state {
+            StreamState::Text => {
+                if !self.buffer.is_empty() {
+                    on_text(&self.buffer);
+                    self.buffer.clear();
+                }
+            }
+            StreamState::Lang => {
+                self.lang.push_str(&self.buffer);
+                self.buffer.clear();
+                if !self.lang.is_empty() {
+                    on_text(&self.lang);
+                    self.lang.clear();
+                }
+                self.state = StreamState::Text;
+            }
+            StreamState::Code => {
+                self.code.push_str(&self.buffer);
+                self.buffer.clear();
+                if !self.code.is_empty() {
+                    let lang = self.lang.trim();
+                    on_code(CodeStreamEvent::Start { language: lang });
+                    on_code(CodeStreamEvent::Chunk { language: lang, code: &self.code });
+                    on_code(CodeStreamEvent::End);
+                }
+                self.lang.clear();
+                self.code.clear();
+                self.state = StreamState::Text;
+            }
+        }
+    }
+
+    fn drain<FText, FCode>(&mut self, on_text: &mut FText, on_code: &mut FCode)
+    where
+        FText: FnMut(&str),
+        FCode: FnMut(CodeStreamEvent<'_>),
+    {
+        loop {
+            match self.state {
+                StreamState::Text => {
+                    if let Some(pos) = self.buffer.find("```") {
+                        if pos > 0 {
+                            on_text(&self.buffer[..pos]);
+                        }
+                        self.buffer.drain(..pos + 3);
+                        self.lang.clear();
+                        self.code.clear();
+                        self.state = StreamState::Lang;
+                        continue;
+                    }
+
+                    let keep = self.trailing_backticks_to_keep();
+                    let emit_len = self.buffer.len().saturating_sub(keep);
+                    if emit_len > 0 {
+                        on_text(&self.buffer[..emit_len]);
+                        self.buffer.drain(..emit_len);
+                    }
+                    break;
+                }
+                StreamState::Lang => {
+                    if let Some(nl) = self.buffer.find('\n') {
+                        self.lang.push_str(&self.buffer[..nl]);
+                        self.buffer.drain(..nl + 1);
+                        let lang = self.lang.trim();
+                        on_code(CodeStreamEvent::Start { language: lang });
+                        self.state = StreamState::Code;
+                        continue;
+                    }
+
+                    if !self.buffer.is_empty() {
+                        self.lang.push_str(&self.buffer);
+                        self.buffer.clear();
+                    }
+                    break;
+                }
+                StreamState::Code => {
+                    if let Some(pos) = self.buffer.find("```") {
+                        if pos > 0 {
+                            self.code.push_str(&self.buffer[..pos]);
+                        }
+                        self.buffer.drain(..pos + 3);
+                        if self.buffer.starts_with('\n') {
+                            self.buffer.drain(..1);
+                        }
+                        let lang = self.lang.trim();
+                        while let Some(nl) = self.code.find('\n') {
+                            let line = &self.code[..nl + 1];
+                            on_code(CodeStreamEvent::Chunk { language: lang, code: line });
+                            self.code.drain(..nl + 1);
+                        }
+                        if !self.code.is_empty() {
+                            let rest = std::mem::take(&mut self.code);
+                            on_code(CodeStreamEvent::Chunk { language: lang, code: &rest });
+                        }
+                        on_code(CodeStreamEvent::End);
+                        self.lang.clear();
+                        self.code.clear();
+                        self.state = StreamState::Text;
+                        continue;
+                    }
+
+                    let keep = self.trailing_backticks_to_keep();
+                    let emit_len = self.buffer.len().saturating_sub(keep);
+                    if emit_len > 0 {
+                        self.code.push_str(&self.buffer[..emit_len]);
+                        self.buffer.drain(..emit_len);
+
+                        let lang = self.lang.trim();
+                        while let Some(nl) = self.code.find('\n') {
+                            let line = &self.code[..nl + 1];
+                            on_code(CodeStreamEvent::Chunk { language: lang, code: line });
+                            self.code.drain(..nl + 1);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    fn trailing_backticks_to_keep(&self) -> usize {
+        let bytes = self.buffer.as_bytes();
+        let mut count = 0usize;
+        let mut i = bytes.len();
+        while count < 2 && i > 0 {
+            if bytes[i - 1] == b'`' {
+                count += 1;
+                i -= 1;
+            } else {
+                break;
+            }
+        }
+        count
+    }
+}
+
 impl Default for OutputFormatter {
     fn default() -> Self {
         Self::new()
@@ -219,5 +483,215 @@ mod tests {
         let formatter = OutputFormatter::new();
         assert!(formatter.syntax_set.syntaxes().len() > 0);
         assert!(formatter.theme_set.themes.len() > 0);
+    }
+
+    #[test]
+    fn test_markdown_stream_renderer_plain_text() {
+        let mut r = MarkdownStreamRenderer::new();
+        let out = std::cell::RefCell::new(String::new());
+        let codes = std::cell::RefCell::new(Vec::<(String, String)>::new());
+        let cur_lang = std::cell::RefCell::new(String::new());
+        let cur_code = std::cell::RefCell::new(String::new());
+
+        r.push_with(
+            "hello\nworld\n",
+            |t| out.borrow_mut().push_str(t),
+            |ev| match ev {
+                CodeStreamEvent::Start { language } => {
+                    cur_lang.borrow_mut().clear();
+                    cur_lang.borrow_mut().push_str(language);
+                    cur_code.borrow_mut().clear();
+                }
+                CodeStreamEvent::Chunk { language: _, code } => {
+                    cur_code.borrow_mut().push_str(code);
+                }
+                CodeStreamEvent::End => {
+                    codes
+                        .borrow_mut()
+                        .push((cur_lang.borrow().to_string(), cur_code.borrow().to_string()));
+                    cur_lang.borrow_mut().clear();
+                    cur_code.borrow_mut().clear();
+                }
+            },
+        );
+        r.finish_with(
+            |t| out.borrow_mut().push_str(t),
+            |ev| match ev {
+                CodeStreamEvent::Start { language } => {
+                    cur_lang.borrow_mut().clear();
+                    cur_lang.borrow_mut().push_str(language);
+                    cur_code.borrow_mut().clear();
+                }
+                CodeStreamEvent::Chunk { language: _, code } => {
+                    cur_code.borrow_mut().push_str(code);
+                }
+                CodeStreamEvent::End => {
+                    codes
+                        .borrow_mut()
+                        .push((cur_lang.borrow().to_string(), cur_code.borrow().to_string()));
+                    cur_lang.borrow_mut().clear();
+                    cur_code.borrow_mut().clear();
+                }
+            },
+        );
+
+        assert_eq!(out.borrow().as_str(), "hello\nworld\n");
+        assert!(codes.borrow().is_empty());
+    }
+
+    #[test]
+    fn test_markdown_stream_renderer_code_block_split_fence() {
+        let mut r = MarkdownStreamRenderer::new();
+        let out = std::cell::RefCell::new(String::new());
+        let codes = std::cell::RefCell::new(Vec::<(String, String)>::new());
+        let cur_lang = std::cell::RefCell::new(String::new());
+        let cur_code = std::cell::RefCell::new(String::new());
+
+        r.push_with(
+            "before\n``",
+            |t| out.borrow_mut().push_str(t),
+            |ev| match ev {
+                CodeStreamEvent::Start { language } => {
+                    cur_lang.borrow_mut().clear();
+                    cur_lang.borrow_mut().push_str(language);
+                    cur_code.borrow_mut().clear();
+                }
+                CodeStreamEvent::Chunk { language: _, code } => {
+                    cur_code.borrow_mut().push_str(code);
+                }
+                CodeStreamEvent::End => {
+                    codes
+                        .borrow_mut()
+                        .push((cur_lang.borrow().to_string(), cur_code.borrow().to_string()));
+                    cur_lang.borrow_mut().clear();
+                    cur_code.borrow_mut().clear();
+                }
+            },
+        );
+        r.push_with(
+            "`rust\nfn main() {}\n``",
+            |t| out.borrow_mut().push_str(t),
+            |ev| match ev {
+                CodeStreamEvent::Start { language } => {
+                    cur_lang.borrow_mut().clear();
+                    cur_lang.borrow_mut().push_str(language);
+                    cur_code.borrow_mut().clear();
+                }
+                CodeStreamEvent::Chunk { language: _, code } => {
+                    cur_code.borrow_mut().push_str(code);
+                }
+                CodeStreamEvent::End => {
+                    codes
+                        .borrow_mut()
+                        .push((cur_lang.borrow().to_string(), cur_code.borrow().to_string()));
+                    cur_lang.borrow_mut().clear();
+                    cur_code.borrow_mut().clear();
+                }
+            },
+        );
+        r.push_with(
+            "`\nafter\n",
+            |t| out.borrow_mut().push_str(t),
+            |ev| match ev {
+                CodeStreamEvent::Start { language } => {
+                    cur_lang.borrow_mut().clear();
+                    cur_lang.borrow_mut().push_str(language);
+                    cur_code.borrow_mut().clear();
+                }
+                CodeStreamEvent::Chunk { language: _, code } => {
+                    cur_code.borrow_mut().push_str(code);
+                }
+                CodeStreamEvent::End => {
+                    codes
+                        .borrow_mut()
+                        .push((cur_lang.borrow().to_string(), cur_code.borrow().to_string()));
+                    cur_lang.borrow_mut().clear();
+                    cur_code.borrow_mut().clear();
+                }
+            },
+        );
+        r.finish_with(
+            |t| out.borrow_mut().push_str(t),
+            |ev| match ev {
+                CodeStreamEvent::Start { language } => {
+                    cur_lang.borrow_mut().clear();
+                    cur_lang.borrow_mut().push_str(language);
+                    cur_code.borrow_mut().clear();
+                }
+                CodeStreamEvent::Chunk { language: _, code } => {
+                    cur_code.borrow_mut().push_str(code);
+                }
+                CodeStreamEvent::End => {
+                    codes
+                        .borrow_mut()
+                        .push((cur_lang.borrow().to_string(), cur_code.borrow().to_string()));
+                    cur_lang.borrow_mut().clear();
+                    cur_code.borrow_mut().clear();
+                }
+            },
+        );
+
+        assert_eq!(out.borrow().as_str(), "before\nafter\n");
+        let codes = codes.borrow();
+        assert_eq!(codes.len(), 1);
+        assert_eq!(codes[0].0, "rust");
+        assert_eq!(codes[0].1, "fn main() {}\n");
+    }
+
+    #[test]
+    fn test_markdown_stream_renderer_no_lang() {
+        let mut r = MarkdownStreamRenderer::new();
+        let out = std::cell::RefCell::new(String::new());
+        let codes = std::cell::RefCell::new(Vec::<(String, String)>::new());
+        let cur_lang = std::cell::RefCell::new(String::new());
+        let cur_code = std::cell::RefCell::new(String::new());
+
+        r.push_with(
+            "```\nline1\nline2\n```\n",
+            |t| out.borrow_mut().push_str(t),
+            |ev| match ev {
+                CodeStreamEvent::Start { language } => {
+                    cur_lang.borrow_mut().clear();
+                    cur_lang.borrow_mut().push_str(language);
+                    cur_code.borrow_mut().clear();
+                }
+                CodeStreamEvent::Chunk { language: _, code } => {
+                    cur_code.borrow_mut().push_str(code);
+                }
+                CodeStreamEvent::End => {
+                    codes
+                        .borrow_mut()
+                        .push((cur_lang.borrow().to_string(), cur_code.borrow().to_string()));
+                    cur_lang.borrow_mut().clear();
+                    cur_code.borrow_mut().clear();
+                }
+            },
+        );
+        r.finish_with(
+            |t| out.borrow_mut().push_str(t),
+            |ev| match ev {
+                CodeStreamEvent::Start { language } => {
+                    cur_lang.borrow_mut().clear();
+                    cur_lang.borrow_mut().push_str(language);
+                    cur_code.borrow_mut().clear();
+                }
+                CodeStreamEvent::Chunk { language: _, code } => {
+                    cur_code.borrow_mut().push_str(code);
+                }
+                CodeStreamEvent::End => {
+                    codes
+                        .borrow_mut()
+                        .push((cur_lang.borrow().to_string(), cur_code.borrow().to_string()));
+                    cur_lang.borrow_mut().clear();
+                    cur_code.borrow_mut().clear();
+                }
+            },
+        );
+
+        assert_eq!(out.borrow().as_str(), "");
+        let codes = codes.borrow();
+        assert_eq!(codes.len(), 1);
+        assert_eq!(codes[0].0, "");
+        assert_eq!(codes[0].1, "line1\nline2\n");
     }
 }
