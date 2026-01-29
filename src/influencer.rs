@@ -259,33 +259,24 @@ pub async fn generate(
 ) -> Result<()> {
     info!("Generating response for prompt: {}", prompt);
 
-    // Check if local model path is provided
-    if let Some(path) = model_path {
-        info!("Using local model from: {}", path.display());
+    // Require local model path
+    let path = model_path.ok_or_else(|| InfluenceError::InvalidConfig(
+        "Model path is required for generation. Use --model-path <path> to specify a local model directory.".to_string()
+    ))?;
 
-        let config = LocalModelConfig {
-            model_path: path.to_path_buf(),
-            temperature,
-            max_seq_len: max_tokens * 2, // Give some room for the prompt
-            ..Default::default()
-        };
+    info!("Using local model from: {}", path.display());
 
-        let mut local_model = LocalModel::load(config).await?;
-        println!("\n--- Local Generation ---");
-        local_model.generate_stream(prompt, max_tokens, temperature).await?;
-        println!("\n--- End ---\n");
-    } else {
-        // Use WatsonX cloud service
-        let config = load_config(None)?;
-        let service = WatsonXService::new(config)?;
+    let config = LocalModelConfig {
+        model_path: path.to_path_buf(),
+        temperature,
+        max_seq_len: max_tokens * 2, // Give some room for the prompt
+        ..Default::default()
+    };
 
-        info!("Using WatsonX cloud model: {}", service.config.model_id);
-        println!("\n--- Response ---");
-
-        service.generate_stream(prompt, max_tokens, temperature).await?;
-
-        println!("\n--- End ---\n");
-    }
+    let mut local_model = LocalModel::load(config).await?;
+    println!("\n--- Local Generation ---");
+    local_model.generate_stream(prompt, max_tokens, temperature).await?;
+    println!("\n--- End ---\n");
 
     Ok(())
 }

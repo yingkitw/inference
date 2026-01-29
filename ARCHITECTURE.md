@@ -2,7 +2,7 @@
 
 ## Overview
 
-Influence follows a modular, trait-based architecture for maintainability and testability.
+Influence is a modular Rust CLI application for downloading HuggingFace models and running local LLM inference. The architecture prioritizes simplicity, testability, and local-only operation (no cloud API dependencies).
 
 ## Module Structure
 
@@ -10,10 +10,12 @@ Influence follows a modular, trait-based architecture for maintainability and te
 influence/
 ├── src/
 │   ├── main.rs           # Entry point, CLI routing
-│   ├── cli.rs            # Command definitions
-│   ├── download.rs       # Model download logic
-│   ├── influencer.rs     # LLM service
-│   └── error.rs          # Error types
+│   ├── cli.rs            # Command definitions using Clap
+│   ├── download.rs       # Model download from HuggingFace
+│   ├── search.rs         # Model search via HuggingFace API
+│   ├── local.rs          # Local model inference with Candle
+│   ├── influencer.rs     # Command generation logic
+│   └── error.rs          # Centralized error types
 ├── examples/
 │   └── basic_usage.rs    # Usage examples
 └── tests/                # Integration tests
@@ -31,128 +33,195 @@ influence/
         │         │         │
         ▼         ▼         ▼
    ┌────────┐ ┌──────┐ ┌──────────┐
-   │Download│ │Serve │ │Generate  │
+   │Download│ │Search│ │Generate  │
    │Module  │ │Module│ │Module    │
    └────┬───┘ └───┬──┘ └────┬─────┘
         │         │         │
-        │    ┌────▼─────────▼────┐
-        │    │  LlmService Trait │
-        │    │  (influencer.rs)  │
-        │    └────────┬───────────┘
-        │             │
-        │    ┌────────▼───────────┐
-        │    │ WatsonXService     │
-        │    │ Implementation     │
-        │    └────────────────────┘
+        │         │         └───────┐
+        │         │                 │
+   ┌────▼────────▼─────────────────▼────┐
+   │         Local Inference Layer       │
+   │              (local.rs)             │
+   │  ┌──────────────────────────────┐  │
+   │  │  LocalModel                  │  │
+   │  │  - Tokenizer loading         │  │
+   │  │  - Architecture detection    │  │
+   │  │  - Weight loading (.safetensors)│ │
+   │  │  - Forward pass (Candle)     │  │
+   │  │  - Token sampling            │  │
+   │  │  - Streaming output          │  │
+   │  └──────────────────────────────┘  │
+   └────────────────────────────────────┘
         │
-   ┌────▼──────────┐
-   │ HTTP Client   │
-   │ (reqwest)     │
-   └───────────────┘
+        ▼
+   ┌────────────────────────────────────┐
+   │         Dependencies               │
+   │  - candle-transformers (inference) │
+   │  - tokenizers (tokenization)       │
+   │  - reqwest (HTTP client)           │
+   └────────────────────────────────────┘
 ```
 
 ## Key Design Patterns
 
-### 1. Trait-Based Service Layer
+### 1. Modular Commands
 
-The `LlmService` trait abstracts LLM operations:
+Each command is a separate module with a single responsibility:
+- `download.rs` - Model downloading
+- `search.rs` - Model search
+- `local.rs` - Local inference
+- `influencer.rs` - Generation orchestration
 
-```rust
-pub trait LlmService {
-    async fn generate_text(&self, prompt: &str, max_tokens: usize, temperature: f32) -> Result<String>;
-    async fn generate_stream(&self, prompt: &str, max_tokens: usize, temperature: f32) -> Result<()>;
-}
-```
+### 2. Centralized Error Handling
 
-Benefits:
-- Easy to mock for testing
-- Can swap implementations
-- Clear contract for LLM operations
-
-### 2. Error Handling
-
-Centralized error types using `thiserror`:
+Using `thiserror` for type-safe error handling:
 
 ```rust
 pub enum InfluenceError {
     DownloadError(String),
     ModelNotFound(String),
     InvalidConfig(String),
-    LlmError(String),
-    // ...
+    LocalModelError(String),
+    IoError(std::io::Error),
+    HttpError(reqwest::Error),
+    JsonError(serde_json::Error),
+    CandleError(String),
+    TokenizerError(String),
 }
 ```
 
 ### 3. Async/Await
 
-All I/O operations are async:
+All I/O operations are async for better concurrency:
 - HTTP downloads
 - File operations
-- LLM API calls
+- Model loading
 
-### 4. Streaming
+### 4. Architecture Detection
 
-Real-time output for LLM generation:
-- Uses WatsonX streaming API
-- Displays tokens as they're generated
-- Better UX for long generations
+Automatic model architecture detection from `config.json`:
+- Parses `model_type` field
+- Detects unsupported architectures (Mamba, MoE)
+- Provides helpful error messages
+
+### 5. Streaming Generation
+
+Real-time token-by-token output:
+- Tokenizes prompt
+- Runs forward pass with KV cache
+- Samples tokens with temperature
+- Streams output as tokens are generated
 
 ## Data Flow
 
 ### Download Command
 
 ```
-CLI Input → Parse Args → Determine Output Dir → Create HTTP Client
-    → For each file:
-        → Download with progress
-        → Save to disk
-    → Complete
+CLI Input
+  → Parse Args
+  → Determine Output Dir
+  → Create HTTP Client
+  → Check Model Exists
+  → Fetch File List (from HuggingFace API)
+  → For each file:
+      → Download with progress bar
+      → Save to disk
+  → Complete
 ```
 
-### Generate Command
+### Generate Command (Local Inference)
 
 ```
-CLI Input → Parse Args → Load Config → Create WatsonX Client
-    → Format Prompt (Granite-specific)
-    → Stream Generation
-    → Display Output
-    → Complete
+CLI Input
+  → Parse Args (require --model-path)
+  → Load LocalModel
+      → Load tokenizer
+      → Detect architecture from config.json
+      → Load .safetensors weights
+      → Initialize KV cache
+  → Tokenize prompt
+  → Run inference loop:
+      → Forward pass through model
+      → Apply temperature scaling
+      → Sample next token (argmax)
+      → Check EOS token
+      → Stream token to stdout
+  → Complete
 ```
 
-## Configuration Management
+## Model Loading Details
 
-Configuration is loaded from environment variables:
-- `WATSONX_API_KEY`
-- `WATSONX_PROJECT_ID`
-- `WATSONX_MODEL_ID`
+### Architecture Detection Flow
 
-No configuration files to keep it simple (KISS principle).
+```
+Read config.json
+  → Parse JSON
+  → Check for layer_types (detect Mamba/MoE)
+  → Check model_type field
+      ├── "llama" → Llama architecture
+      ├── "mistral" → Mistral architecture
+      ├── "phi" → Phi architecture
+      ├── "granite" → Granite architecture
+      └── Unknown → Default to Llama with warning
+```
+
+### Supported Model Files
+
+Each model directory must contain:
+- `tokenizer.json` or `tokenizer_config.json` - Tokenizer configuration
+- `config.json` - Model architecture and parameters
+- `*.safetensors` - Model weights (one or more files)
+
+### Inference Pipeline
+
+```
+1. Load Model
+   - Parse config.json for model parameters
+   - Create LlamaConfig with actual dimensions
+   - Memory-map .safetensors files
+   - Build model graph
+
+2. Process Prompt
+   - Tokenize input text
+   - Create input tensor
+   - Run forward pass to fill cache
+
+3. Generate Tokens
+   - Get logits from last token
+   - Apply temperature scaling
+   - Sample token (argmax)
+   - Append to output
+   - Check EOS condition
+   - Repeat until max_tokens or EOS
+```
+
+## Configuration
+
+### No Configuration Files
+
+The CLI follows the KISS principle:
+- All configuration via command-line arguments
+- No config files to manage
+- Predictable behavior
+
+### Environment Variables
+
+No environment variables required for local inference:
+- Purely local operation
+- No API keys needed
+- No network dependency for generation
 
 ## Logging
 
 Uses `tracing` for structured logging:
-- Info level for user-facing messages
-- Debug level for internal operations
-- Error level for failures
+- `info` - User-facing progress messages
+- `debug` - Internal operations details
+- `warn` - Non-fatal issues (unsupported architectures)
+- `error` - Fatal errors
 
-## Testing Strategy
-
-### Unit Tests
-- Individual function testing
-- Mock external dependencies
-- Test error cases
-
-### Integration Tests
-- End-to-end command testing
-- Mock HTTP servers for downloads
-- Mock LLM service for generation
-
-### Test Organization
-```
-tests/
-├── download_tests.rs
-├── influencer_tests.rs
-└── integration_tests.rs
+Enable debug logging:
+```bash
+RUST_LOG=influence=debug cargo run -- generate "Hello" --model-path ./model
 ```
 
 ## Dependencies
@@ -160,13 +229,17 @@ tests/
 ### Core
 - `tokio` - Async runtime
 - `clap` - CLI parsing
-- `reqwest` - HTTP client
-- `watsonx-rs` - WatsonX SDK
+- `reqwest` - HTTP client for downloads/search
+
+### ML Inference
+- `candle-core` - Core ML operations
+- `candle-nn` - Neural network components
+- `candle-transformers` - Transformer models
+- `tokenizers` - HuggingFace tokenizers
 
 ### Utilities
 - `tracing` - Logging
 - `indicatif` - Progress bars
-- `directories` - Path management
 - `serde` - Serialization
 
 ### Error Handling
@@ -175,25 +248,47 @@ tests/
 
 ## Performance Considerations
 
-1. **Streaming Downloads**: Uses chunked streaming to avoid loading entire files in memory
-2. **Async I/O**: Non-blocking operations for better concurrency
-3. **Progress Tracking**: Minimal overhead with indicatif
-4. **Lazy Loading**: Only loads what's needed
+### Current Optimizations
+1. **KV Caching**: Cache key/value tensors for generated tokens
+2. **Memory Mapping**: Use mmap for .safetensors files
+3. **Streaming Output**: Display tokens as they're generated
+4. **Async I/O**: Non-blocking operations
+
+### Performance Characteristics
+- **Memory**: Model size + cache + tokenizer
+- **CPU-bound**: Inference runs on CPU (GPU support planned)
+- **Single-threaded**: No parallel inference yet
 
 ## Security Considerations
 
-1. **API Keys**: Must be in environment variables, never hardcoded
-2. **HTTPS**: All downloads use HTTPS
-3. **File Permissions**: Respects system file permissions
-4. **Input Validation**: CLI arguments are validated
+1. **No Remote Execution**: Pure local inference
+2. **HTTPS Only**: All downloads use HTTPS
+3. **File Permissions**: Respects system permissions
+4. **Input Validation**: CLI arguments validated
+5. **No API Keys**: No credentials to leak
 
 ## Extensibility
 
-Easy to extend:
-- Add new commands: Extend `Commands` enum
-- Add new LLM providers: Implement `LlmService` trait
-- Add new model formats: Extend `get_model_files()`
-- Add new mirrors: Pass as CLI argument
+### Adding New Model Architectures
+
+1. Add variant to `ModelArchitecture` enum
+2. Implement architecture-specific loader
+3. Add detection logic in `detect_architecture()`
+4. Update config parsing if needed
+
+### Adding New Commands
+
+1. Add variant to `Commands` enum in `cli.rs`
+2. Create new module in `src/`
+3. Add handler in `main.rs`
+4. Update documentation
+
+### Adding New Sampling Methods
+
+1. Extend `generate_text()` method
+2. Add CLI option for sampling method
+3. Implement sampling algorithm (top-k, nucleus, etc.)
+4. Update tests
 
 ## Maintenance
 
@@ -201,4 +296,12 @@ Easy to extend:
 - **DRY**: No code duplication
 - **KISS**: Simple, straightforward implementations
 - **Documentation**: Inline docs for public APIs
-- **Tests**: Good coverage for maintainability
+- **Tests**: Unit tests for core functionality
+
+## Known Limitations
+
+1. **CPU Only**: GPU support not yet implemented
+2. **Llama Architecture**: Only Llama-style models for inference
+3. **Argmax Sampling**: No nucleus or top-k sampling yet
+4. **No Conversation Memory**: Each generation is independent
+5. **No Batch Processing**: Single prompt only

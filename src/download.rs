@@ -282,7 +282,7 @@ async fn download_file(client: &Client, url: &str, path: &Path) -> Result<()> {
     }
 
     if let Some(pb) = pb {
-        pb.finish_with_message(format!("✓ {}", file_name));
+        pb.finish_with_message(format!("OK {}", file_name));
     }
 
     file.sync_all().await?;

@@ -25,6 +25,24 @@ pub enum InfluenceError {
 
     #[error("Local model error: {0}")]
     LocalModelError(String),
+
+    #[error("Candle error: {0}")]
+    CandleError(String),
+
+    #[error("Tokenizer error: {0}")]
+    TokenizerError(String),
+}
+
+impl From<candle_core::Error> for InfluenceError {
+    fn from(err: candle_core::Error) -> Self {
+        InfluenceError::CandleError(err.to_string())
+    }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync>> for InfluenceError {
+    fn from(err: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        InfluenceError::TokenizerError(err.to_string())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, InfluenceError>;

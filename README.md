@@ -1,39 +1,62 @@
 # Influence
 
-A Rust CLI application for downloading models from HuggingFace mirrors and serving them as an LLM influencer using WatsonX.
+A Rust CLI application for downloading models from HuggingFace mirrors and running local LLM inference with Candle.
 
 ## Features
 
+- **Search models** on HuggingFace with filters
 - **Download models** from HuggingFace mirrors with progress tracking
-- **Serve LLM** as an influencer using WatsonX API
-- **Generate text** with streaming support using Granite models
+- **Full local inference** with candle-transformers (Llama architecture)
+- **Streaming text generation** with real-time token output
+- **Model architecture detection** (Llama, Mistral, Phi, Granite)
+- **CPU inference** with support for .safetensors model weights
 - **CLI interface** with simple commands
-- **Test-friendly architecture** with trait-based design
+- **No external API dependencies** - 100% local inference
+
+## Quick Start
+
+```bash
+# 1. Search for a model
+cargo run -- search "llama" --limit 5
+
+# 2. Download a model
+cargo run -- download -m TinyLlama/TinyLlama-1.1B-Chat-v1.0
+
+# 3. Generate text with the local model
+cargo run -- generate "What is Rust?" --model-path ./models/TinyLlama_TinyLlama-1.1B-Chat-v1.0
+```
 
 ## Installation
 
 ```bash
+# Build from source
 cargo build --release
-```
 
-## Configuration
-
-Set the following environment variables:
-
-```bash
-export WATSONX_API_KEY="your-api-key"
-export WATSONX_PROJECT_ID="your-project-id"
-export WATSONX_MODEL_ID="ibm/granite-4-h-small"  # Optional, defaults to granite-4-h-small
+# The binary will be at target/release/influence
 ```
 
 ## Usage
+
+### Search for models
+
+Search for models on HuggingFace:
+
+```bash
+cargo run -- search "llama"
+```
+
+With filters:
+
+```bash
+cargo run -- search "text-generation" --limit 10 --author meta-llama
+```
 
 ### Download a model
 
 Download a model from HuggingFace mirror:
 
 ```bash
-cargo run -- download -m ibm/granite-4-h-small
+cargo run -- download -m TinyLlama/TinyLlama-1.1B-Chat-v1.0
 ```
 
 With custom mirror and output directory:
@@ -42,66 +65,93 @@ With custom mirror and output directory:
 cargo run -- download -m ibm/granite-4-h-small -r https://hf-mirror.com -o ./models
 ```
 
-### Generate text
+### Generate text with local model
 
-Generate text using a prompt:
+Generate text using a downloaded local model:
 
 ```bash
-cargo run -- generate "What is Rust programming language?"
+cargo run -- generate "What is Rust programming language?" --model-path ./models/TinyLlama_TinyLlama-1.1B-Chat-v1.0
 ```
 
 With custom parameters:
 
 ```bash
-cargo run -- generate "Explain quantum computing" --max-tokens 1024 --temperature 0.8
+cargo run -- generate "Explain quantum computing" --model-path ./models/meta-llama_Llama-2-7b --max-tokens 1024 --temperature 0.8
 ```
 
-### Serve the influencer
+**Note:** The `--model-path` parameter is required and should point to a directory containing:
+- `tokenizer.json` or `tokenizer_config.json`
+- `config.json`
+- Model weights (`.safetensors` files)
 
-Start the influencer service:
+## Local Inference Details
 
-```bash
-cargo run -- serve --port 8080
-```
+The CLI includes complete local inference implementation using candle-transformers:
+- Loads Llama-architecture models from .safetensors weights
+- Performs forward pass with KV caching for efficiency
+- Samples tokens with temperature control
+- Streams output token-by-token for real-time generation
+- Runs on CPU (Mac acceleration available with `--features accelerate`)
+
+### Supported Model Architectures
+
+- OK Standard Llama models (meta-llama/Llama-2-7b-hf, TinyLlama, etc.)
+- OK Standard Mistral models (mistralai/Mistral-7B-v0.1, etc.)
+- OK Pure transformer-based models with Llama architecture
+- X Mamba/Hybrid models (GraniteMoeHybrid, etc.) - requires specialized implementation
+- X MoE (Mixture of Experts) models - not yet supported
+
+### Recommended Models
+
+For testing and development:
+- `TinyLlama/TinyLlama-1.1B-Chat-v1.0` - Small (~1GB), fast for testing
+- `microsoft/phi-2` - Compact model with good performance
+- `mistralai/Mistral-7B-v0.1` - Larger but capable model
 
 ## Commands
+
+### `search`
+
+Search for models on HuggingFace.
+
+**Arguments:**
+- `<QUERY>` - Search query
+
+**Options:**
+- `-l, --limit <LIMIT>` - Maximum number of results (default: 20)
+- `-a, --author <AUTHOR>` - Filter by author/organization
 
 ### `download`
 
 Download a model from HuggingFace mirror.
 
 **Options:**
-- `-m, --model <MODEL>` - Model name (e.g., 'ibm/granite-4-h-small')
+- `-m, --model <MODEL>` - Model name (e.g., 'TinyLlama/TinyLlama-1.1B-Chat-v1.0')
 - `-r, --mirror <MIRROR>` - Mirror URL (default: hf-mirror.com)
-- `-o, --output <OUTPUT>` - Output directory
-
-### `serve`
-
-Serve LLM as influencer.
-
-**Options:**
-- `-m, --model-path <MODEL_PATH>` - Path to model directory
-- `-p, --port <PORT>` - Port to serve on (default: 8080)
+- `-o, --output <OUTPUT>` - Output directory (default: ./models/)
 
 ### `generate`
 
-Generate text using the LLM.
+Generate text using a local LLM.
 
 **Arguments:**
 - `<PROMPT>` - Prompt text
 
 **Options:**
-- `-m, --model-path <MODEL_PATH>` - Path to model directory
+- `-m, --model-path <MODEL_PATH>` - Path to local model directory (required)
 - `--max-tokens <MAX_TOKENS>` - Maximum tokens to generate (default: 512)
 - `--temperature <TEMPERATURE>` - Temperature for generation (default: 0.7)
+
+**Note:** The `--model-path` parameter is required. Local inference only - no cloud API dependency.
 
 ## Architecture
 
 The application follows a modular architecture:
 
 - **`cli`** - Command-line interface using Clap
-- **`download`** - Model downloading from HuggingFace mirrors
-- **`influencer`** - LLM service using WatsonX with trait-based design
+- **`search`** - Model search on HuggingFace
+- **`download`** - Model downloading from HuggingFace mirrors with dynamic file discovery
+- **`local`** - Local model loading and inference with candle-transformers
 - **`error`** - Error handling with thiserror
 
 ## Testing
@@ -118,18 +168,15 @@ Run with logging:
 RUST_LOG=influence=debug cargo test
 ```
 
-## Examples
-
-See `examples/basic_usage.rs` for usage examples.
-
 ## Dependencies
 
 - **clap** - CLI parsing
 - **tokio** - Async runtime
 - **reqwest** - HTTP client
-- **watsonx-rs** - WatsonX SDK
-- **anyrepair** - JSON repair
+- **candle-core/candle-nn/candle-transformers** - ML inference framework
+- **tokenizers** - Tokenization from HuggingFace
 - **tracing** - Logging
+- **indicatif** - Progress bars
 
 ## License
 
