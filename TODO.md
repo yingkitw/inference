@@ -1,12 +1,13 @@
 # TODO
 
-## Completed (v0.1.0)
+## Completed (v0.1.4)
 
 ### Core Infrastructure
 - [x] Create Cargo.toml with dependencies
 - [x] Implement CLI with clap
 - [x] Set up error handling with thiserror
 - [x] Configure tracing/logging
+- [x] Modularize large code files for better maintainability (src/local, src/output)
 
 ### Model Search
 - [x] Add search command for HuggingFace models
@@ -23,113 +24,208 @@
 - [x] Model existence validation before download
 - [x] Support for custom mirrors and output directories
 - [x] Handle both .safetensors and .bin model formats
+- [x] Retry logic for failed downloads (MAX_RETRIES=3)
+
+### Model Management
+- [x] Add `list` command to show all downloaded models
+- [x] Add `deploy` command to start API server
+- [x] Display model details (format, architecture, size, file count)
 
 ### Local Inference
 - [x] Implement local model loading with tokenizers
 - [x] Load Llama models from .safetensors weights
 - [x] Parse actual config.json for model parameters
-- [x] Model architecture detection (Llama, Mistral, Phi, Granite)
+- [x] Model architecture detection (Llama, Mistral, Mamba, GraniteMoeHybrid, BERT, Phi, Granite)
 - [x] Forward pass with KV caching
 - [x] Temperature-based token sampling
-- [x] Streaming token generation
+- [x] Streaming token generation with markdown rendering
 - [x] EOS token detection
-- [x] Detect unsupported architectures (Mamba/MoE)
+- [x] Detect unsupported architectures (Mamba/MoE in GraniteMoeHybrid)
 - [x] Provide helpful error messages for incompatible models
+
+### GPU Support
+- [x] Add Metal GPU support for macOS
+- [x] Add CUDA support for Linux/Windows
+- [x] Add --device/--device-index flags for explicit backend selection
+- [x] Metal GPU warmup for reduced first-token latency (INFLUENCE_WARMUP_TOKENS)
+- [x] Auto-detect GPU (Metal > CUDA > CPU)
+
+### Generation Features
+- [x] Add system prompt support
+- [x] Add top-p and top-k sampling options
+- [x] Add repetition penalty control
+- [x] Streaming markdown output with syntax highlighting for code blocks
+- [x] CLI UX improvements with formatted output (colors, markdown, tables)
+
+### Chat Mode
+- [x] Add chat mode with conversation history
+- [x] Add slash commands: `/help`, `/clear`, `/save`, `/load`, `/history`, `/set`, `/quit`
+- [x] Session save/load (JSON format)
+- [x] Runtime parameter adjustment via `/set`
+- [x] Keep last 10 turns (20 messages) for memory management
+
+### Web API
+- [x] Add HTTP server for serving API (Axum framework)
+- [x] REST + SSE streaming endpoints
+- [x] Health check endpoint
+- [x] Chat completions endpoint (OpenAI-compatible)
+- [x] Security hardening with CORS and proper error handling
+- [x] Comprehensive API documentation (OpenAPI/Swagger compatible)
+- [x] Document REST/SSE endpoints with curl examples (docs/API.md)
+- [x] Add integration tests for /v1/generate and /v1/generate_stream
+
+### Ollama Compatibility
+- [x] `POST /api/generate` (non-stream JSON response)
+- [x] `POST /api/generate` with NDJSON streaming
+- [x] Map Ollama `options` to Influence params (temperature, top_p, top_k, repeat_penalty, num_predict)
+- [x] `POST /api/embeddings` for BERT embeddings
+- [x] `POST /api/tags` for model metadata
+- [x] Document Ollama-compat API in README
+
+### Embeddings
+- [x] Add `embed` command for encoder-only models
+- [x] BERT embeddings support
+- [x] Proper error messages for encoder-only models attempting text generation
+
+### Configuration
+- [x] Add environment variable configuration (.env file support via dotenvy)
+- [x] Add `config` command to display current settings
+- [x] Priority: CLI args > Env vars > Built-in defaults
+
+### GGUF Support (Partial)
+- [x] GGUF file auto-detection (.gguf extension)
+- [x] Quantization format detection from filenames (Q2_K, Q4_K_M, Q8_0, etc.)
+- [x] Metadata parsing (quantization type, file path)
+- [x] Architecture detection (prioritizes GGUF over safetensors)
+- [x] Comprehensive test coverage (7 GGUF-specific tests)
+- [ ] Full GGUF inference engine integration (in development)
 
 ### Documentation
 - [x] Create README.md
 - [x] Create SPEC.md and ARCHITECTURE.md
-- [x] Create USAGE.md guide
-- [x] Create MODELS.md guide
-- [x] Create IMPLEMENTATION.md
+- [x] Create CLAUDE.md for project guidance
+- [x] Update README with comprehensive command reference
+- [x] Document all commands with examples
+- [x] Add GGUF usage guide
+- [x] Document troubleshooting guide
 - [x] Update Cargo.toml with proper metadata
-- [x] Remove all emojis from code
 
 ### Testing
-- [x] Add unit tests for core functionality
+- [x] Add unit tests for core functionality (79 total tests)
+- [x] CLI parsing tests
+- [x] GGUF-specific tests (feature-gated)
+- [x] Architecture detection tests
 - [x] Build succeeds with cargo build
 - [x] All tests pass with cargo test
-- [x] CLI help commands work correctly
+
+## Current Limitations
+
+### Architecture Support
+**Text Generation Working:**
+- [x] Llama (Llama 2/3, TinyLlama, Phi-3)
+- [x] Mamba
+- [x] GraniteMoeHybrid (attention-only configs)
+- [x] Granite
+
+**Detection Only (Generation Not Implemented):**
+- [ ] Mistral (can be loaded but generation not implemented)
+- [ ] Phi (detected but no loading function)
+
+**Embeddings Only:**
+- [x] BERT (encoder-only, use `embed` command)
+
+**Not Supported:**
+- [ ] Mixture of Experts (MoE) models
+- [ ] GraniteMoeHybrid with Mamba layers
+- [ ] GGUF quantized models (detection works, inference in development)
+
+### Performance Limitations
+- [ ] No batch generation
+- [ ] Fresh KV cache per request (no session-based cache reuse)
+- [ ] No model caching in memory between requests
+
+## In Progress
+
+### GGUF Inference
+- [ ] Full GGUF inference engine integration
+- [ ] GGUF streaming support
+- [ ] GGUF embeddings support
 
 ## Future Enhancements
 
+### Ollama-Inspired Commands
+- [ ] `show` - Display detailed model information (parameters, architecture, template details)
+- [ ] `rm` / `remove` - Remove a downloaded model from disk
+- [ ] `ps` - Show running model servers (similar to `ollama ps`)
+- [ ] `copy` - Create a copy of a model
+- [ ] `info` - Show detailed model metadata and capabilities
+- [ ] `verify` - Verify model integrity (checksum validation)
+
 ### Model Support
-- [x] Add Mistral model support (architecture-specific loading)
-- [ ] Add Phi model support
-- [x] Fix logits extraction and softmax dimension errors
-- [x] Test with TinyLlama model - WORKING!
-- [x] Add Metal GPU support for macOS - WORKING!
-- [x] Fix token spacing in decoded output - WORKING!
+- [ ] Implement Mistral text generation
+- [ ] Implement Phi loading and generation
 - [ ] Test with additional model architectures
-- [ ] Validate Mamba generation with a real HF Mamba model
-- [ ] Validate GraniteMoeHybrid generation with an attention-only GraniteMoeHybrid config
-- [ ] Add embeddings support for RoBERTa/ALBERT (or map them to supported candle models)
-- [x] Add CUDA support for Linux/Windows
-- [x] Add --device/--device-index flags for explicit backend selection
-- [ ] Test local generation with an actual Mistral model from HuggingFace
-- [ ] Implement quantization support
-- [ ] Add model caching in memory
-- [ ] Optimize tokenization performance
+- [ ] Add more quantization formats support (beyond GGUF)
+- [ ] Add embeddings support for RoBERTa/ALBERT
 
 ### Performance
-- [x] Add GPU support (Metal)
-- [x] Reduce first-token latency on Metal by warming up a few decode steps at model load (set INFLUENCE_WARMUP_TOKENS=0 to disable)
-- [x] KV cache capabilities: Fresh cache per generation request (stateless, memory efficient)
-- [ ] Session-based KV cache reuse for multi-turn conversations (future enhancement)
+- [ ] Session-based KV cache reuse for multi-turn conversations
 - [ ] Implement batch generation
 - [ ] Add model caching in memory
 - [ ] Optimize tokenization performance
-
-### Ollama Compatibility
-- [x] Add Ollama-compatible endpoint: `POST /api/generate` (non-stream JSON response)
-- [x] Add Ollama-compatible streaming for `/api/generate` using NDJSON (one JSON object per line)
-- [x] Map Ollama `options` fields to Influence generation params:
-  - `temperature`, `top_p`, `top_k`, `repeat_penalty`, `num_predict`
-- [x] Add Ollama-compatible endpoint: `POST /api/embeddings` mapped to `influence embed` behavior (BERT only for now)
-- [x] Add minimal Ollama discovery endpoints (TBD): e.g. `/api/tags` for “loaded model” metadata
-- [x] Document Ollama-compat API in README/SPEC (what is supported vs not)
-- [x] Add integration tests for Ollama endpoints (streaming + non-stream)
+- [ ] Resume capability for interrupted downloads
 
 ### Features
-- [x] Add chat mode with conversation history
-- [x] Add system prompt support
-- [x] Add top-p and top-k sampling options
-- [x] Add repetition penalty control
-- [x] Add environment variable configuration (.env file support)
-- [x] Add HTTP server for serving API
-- [x] Add model validation after download
-- [x] Improve CLI output UX with markdown rendering and syntax highlighting
-- [x] Add config command to display configuration settings in formatted table
-- [x] Stream-render markdown output for generate with fenced code-block syntax highlighting
-
-### Web API
-- [ ] Document REST/SSE endpoints and example curl commands
-- [ ] Add integration tests for /v1/generate and /v1/generate_stream
+- [ ] Add conversation search/filtering in chat mode
+- [ ] Add multi-model support in API server
+- [ ] Add streaming response for `config` command
+- [ ] Add model metadata storage and indexing
 
 ### Developer Experience
-- [ ] Add integration tests with mock server
-- [ ] Add retry logic for failed downloads
-- [ ] Add resume capability for interrupted downloads
-- [ ] Add model metadata storage
-- [ ] Add more comprehensive examples
+- [x] Add integration tests with mock server
 - [ ] Add benchmarking suite
-
-### Documentation
+- [ ] Add more comprehensive examples
 - [ ] Add CONTRIBUTING.md
 - [ ] Add API documentation for library use
 - [ ] Add performance benchmarks
-- [ ] Add troubleshooting guide
 
-## Known Limitations
+### Security
+- [ ] Add API key authentication for server
+- [ ] Add rate limiting
+- [ ] Add request validation
+- [ ] Add input sanitization
 
-### Unsupported Models
-- Mixture of Experts (MoE) models
-- GraniteMoeHybrid configs containing Mamba layers
-- Encoder-only text generation (BERT, RoBERTa, ALBERT) (embeddings supported for BERT)
-- Models requiring specialized implementations
+## Version History
 
-### Current Limitations
-- GPU support via Metal/CUDA available
-- No batch generation
-- Text generation supported for Llama + Mamba + GraniteMoeHybrid (attention-only)
-- Mistral loading supported but generation not implemented
+### v0.1.4 (Current)
+- Streaming markdown renderer with syntax highlighting
+- CLI UX improvements with formatted output
+- `config` command to display settings
+- Security hardening and retry logic
+- Reduced default warmup tokens
+- Performance optimizations (removed Arc<Mutex> overhead)
+
+### v0.1.3
+- GGUF quantized model support (detection)
+- Model management commands (`list`, `deploy`)
+- Enhanced chat mode features
+- Session persistence
+
+### v0.1.2
+- Embeddings support (BERT)
+- Ollama-compatible API endpoints
+- Environment variable configuration
+- Metal GPU warmup
+
+### v0.1.1
+- Chat mode with conversation history
+- API server (REST + SSE streaming)
+- Advanced sampling options
+- Model validation
+
+### v0.1.0
+- Initial release
+- Model search and download
+- Local inference with Llama models
+- Metal GPU support
+- Basic generation features

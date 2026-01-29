@@ -358,6 +358,7 @@ pub async fn generate(
             &piece,
             |text| {
                 print!("{}", text);
+                let _ = io::stdout().flush();
             },
             |ev| {
                 match ev {
@@ -389,7 +390,10 @@ pub async fn generate(
     }).await?;
 
     stream_md.finish_with(
-        |text| print!("{}", text),
+        |text| {
+            print!("{}", text);
+            let _ = io::stdout().flush();
+        },
         |ev| {
             match ev {
                 crate::output::CodeStreamEvent::Start { language } => {

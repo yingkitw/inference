@@ -1,8 +1,6 @@
 use crate::error::{InfluenceError, Result};
 use tokenizers::Tokenizer;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use tracing::{debug, info, warn};
 use candle_core::{Device, Tensor, DType};
 use std::io::Write;
@@ -10,82 +8,21 @@ use std::time::Instant;
 
 mod backends;
 mod device;
+mod config;
+mod sampling;
+mod architecture;
+mod tokenization;
 
 #[cfg(feature = "gguf")]
 mod gguf_backend;
 
 pub use backends::LocalBackend;
 pub use device::get_device;
+pub use config::{ModelArchitecture, DevicePreference, LocalModelConfig};
+pub use sampling::do_sample;
+pub use architecture::detect_architecture;
+pub use tokenization::{get_eos_token, stream_piece};
 
-#[derive(Debug, Clone, Copy)]
-pub enum ModelArchitecture {
-    Llama,
-    LlamaQuantized,
-    Mistral,
-    Mamba,
-    GraniteMoeHybrid,
-    Bert,
-    Phi,
-    Granite,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DevicePreference {
-    Auto,
-    Cpu,
-    Metal,
-    Cuda,
-}
-
-impl FromStr for DevicePreference {
-    type Err = InfluenceError;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.trim().to_lowercase().as_str() {
-            "auto" => Ok(Self::Auto),
-            "cpu" => Ok(Self::Cpu),
-            "metal" => Ok(Self::Metal),
-            "cuda" => Ok(Self::Cuda),
-            other => Err(InfluenceError::InvalidConfig(format!(
-                "Invalid device '{}'. Use one of: auto, cpu, metal, cuda",
-                other
-            ))),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct LocalModelConfig {
-    pub model_path: PathBuf,
-    pub architecture: ModelArchitecture,
-    pub quantized: bool,
-    pub max_seq_len: usize,
-    pub temperature: f32,
-    pub top_p: f32,
-    pub top_k: Option<usize>,
-    pub repeat_penalty: f32,
-    pub repeat_last_n: usize,
-    pub device_preference: DevicePreference,
-    pub device_index: usize,
-}
-
-impl Default for LocalModelConfig {
-    fn default() -> Self {
-        Self {
-            model_path: PathBuf::from("models"),
-            architecture: ModelArchitecture::Llama,
-            quantized: false,
-            max_seq_len: 4096,
-            temperature: 0.7,
-            top_p: 0.9,
-            top_k: None,
-            repeat_penalty: 1.1,
-            repeat_last_n: 64,
-            device_preference: DevicePreference::Auto,
-            device_index: 0,
-        }
-    }
-}
 
 pub struct LocalModel {
     config: LocalModelConfig,
@@ -114,7 +51,7 @@ impl LocalModel {
         }
 
         let tokenizer = Self::load_tokenizer(&config.model_path)?;
-        let architecture = Self::detect_architecture(&config.model_path)?;
+        let architecture = detect_architecture(&config.model_path)?;
         config.architecture = architecture;
 
         info!("Detected architecture: {:?}", architecture);
@@ -181,94 +118,6 @@ impl LocalModel {
             .map_err(|e| InfluenceError::LocalModelError(format!("Failed to load tokenizer: {}", e)))
     }
 
-    fn detect_architecture(model_path: &Path) -> Result<ModelArchitecture> {
-        // Check for GGUF files first
-        #[cfg(feature = "gguf")]
-        {
-            if let Ok(entries) = fs::read_dir(model_path) {
-                let has_gguf = entries
-                    .flatten()
-                    .any(|entry| {
-                        entry.path()
-                            .extension()
-                            .map_or(false, |ext| ext == "gguf")
-                    });
-
-                if has_gguf {
-                    info!("Detected GGUF model");
-                    return Ok(ModelArchitecture::LlamaQuantized);
-                }
-            }
-        }
-
-        // Check for standard config.json
-        let config_path = model_path.join("config.json");
-        if !config_path.exists() {
-            return Ok(ModelArchitecture::Llama);
-        }
-
-        let config_content = fs::read_to_string(&config_path)
-            .map_err(|e| InfluenceError::LocalModelError(format!("Failed to read config: {}", e)))?;
-
-        let config: serde_json::Value = serde_json::from_str(&config_content)
-            .map_err(|e| InfluenceError::LocalModelError(format!("Failed to parse config: {}", e)))?;
-
-        let model_type = config.get("model_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("llama");
-
-        // Detect Mixture-of-Experts configs (not yet supported).
-        // Common fields across various MoE families.
-        if config.get("num_local_experts").is_some()
-            || config.get("num_experts").is_some()
-            || config.get("expert_capacity").is_some()
-            || config.get("router_aux_loss_coef").is_some()
-        {
-            return Err(InfluenceError::LocalModelError(
-                "Unsupported model architecture: Mixture-of-Experts (MoE) models are not yet supported".to_string(),
-            ));
-        }
-
-        // Detect GraniteMoeHybrid. If it contains Mamba layers, candle's implementation bails.
-        if config.get("layer_types").is_some() {
-            let has_mamba_layer = config
-                .get("layer_types")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter().any(|x| {
-                        x.as_str()
-                            .map(|s| s.eq_ignore_ascii_case("mamba"))
-                            .unwrap_or(false)
-                    })
-                })
-                .unwrap_or(false);
-
-            if has_mamba_layer {
-                return Err(InfluenceError::LocalModelError(
-                    "Unsupported GraniteMoeHybrid config: contains Mamba layers (not supported by candle-transformers yet)".to_string(),
-                ));
-            }
-
-            return Ok(ModelArchitecture::GraniteMoeHybrid);
-        }
-
-        match model_type {
-            "llama" => Ok(ModelArchitecture::Llama),
-            "mistral" => Ok(ModelArchitecture::Mistral),
-            "mamba" => Ok(ModelArchitecture::Mamba),
-            "granitemoehybrid" => Ok(ModelArchitecture::GraniteMoeHybrid),
-            "bert" => Ok(ModelArchitecture::Bert),
-            "roberta" | "albert" => Err(InfluenceError::LocalModelError(
-                format!("Unsupported encoder-only model type '{}': only BERT-family configs compatible with candle_transformers::models::bert are supported currently", model_type),
-            )),
-            "phi" => Ok(ModelArchitecture::Phi),
-            "granite" => Ok(ModelArchitecture::Granite),
-            _ => {
-                warn!("Unknown model type '{}', defaulting to Llama", model_type);
-                Ok(ModelArchitecture::Llama)
-            }
-        }
-    }
 
     pub async fn generate_text(&mut self, prompt: &str, max_tokens: usize, temperature: f32) -> Result<String> {
         info!("Generating (max_tokens={}, temp={})", max_tokens, temperature);
@@ -301,7 +150,7 @@ impl LocalModel {
                 let last_logits = &logits_vec[0];
 
                 // Sample token using temperature, top-k, and top-p
-                let next = Self::do_sample(last_logits, temperature, top_p, top_k)?;
+                let next = do_sample(last_logits, temperature, top_p, top_k)?;
 
                 let mut generated = vec![next];
 
@@ -318,7 +167,7 @@ impl LocalModel {
                     let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
                     let token_logits = &logits_vec[0];
 
-                    let next = Self::do_sample(token_logits, temperature, top_p, top_k)?;
+                    let next = do_sample(token_logits, temperature, top_p, top_k)?;
                     generated.push(next);
                 }
 
@@ -348,7 +197,7 @@ impl LocalModel {
                 let last_logits = last_logits
                     .ok_or_else(|| InfluenceError::LocalModelError("Empty prompt".to_string()))?;
                 let token_logits = last_logits.as_slice();
-                let mut next = Self::do_sample(token_logits, temperature, top_p, top_k)?;
+                let mut next = do_sample(token_logits, temperature, top_p, top_k)?;
 
                 let mut generated = vec![next];
                 for _idx in 1..max_tokens {
@@ -364,7 +213,7 @@ impl LocalModel {
                     let token_logits = logits_vec.get(0).ok_or_else(|| {
                         InfluenceError::LocalModelError("Mamba logits were empty".to_string())
                     })?;
-                    next = Self::do_sample(token_logits, temperature, top_p, top_k)?;
+                    next = do_sample(token_logits, temperature, top_p, top_k)?;
                     generated.push(next);
                 }
 
@@ -380,7 +229,7 @@ impl LocalModel {
                 let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
                 let token_logits = &logits_vec[0];
 
-                let mut next = Self::do_sample(token_logits, temperature, top_p, top_k)?;
+                let mut next = do_sample(token_logits, temperature, top_p, top_k)?;
                 let mut generated = vec![next];
 
                 for idx in 1..max_tokens {
@@ -395,7 +244,7 @@ impl LocalModel {
                     let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
                     let token_logits = &logits_vec[0];
 
-                    next = Self::do_sample(token_logits, temperature, top_p, top_k)?;
+                    next = do_sample(token_logits, temperature, top_p, top_k)?;
                     generated.push(next);
                 }
 
@@ -449,138 +298,10 @@ impl LocalModel {
     }
 
     fn get_eos_token(&self) -> Option<u32> {
-        self.tokenizer.token_to_id("</s>")
-            .or_else(|| self.tokenizer.token_to_id("<EOS>"))
+        get_eos_token(&self.tokenizer)
     }
 
-    /// Sample a token from logits using temperature, top-k, and top-p sampling.
-    ///
-    /// # Arguments
-    /// * `logits` - Raw output logits from the model
-    /// * `temperature` - Sampling temperature (0.0 = greedy, higher = more random)
-    /// * `top_p` - Nucleus sampling threshold (0.0 to 1.0, 1.0 = disabled)
-    /// * `top_k` - Top-k sampling (None = disabled, Some(n) = keep only top n tokens)
-    ///
-    /// # Returns
-    /// The sampled token ID
-    fn do_sample(logits: &[f32], temperature: f32, top_p: f32, top_k: Option<usize>) -> Result<u32> {
-        let vocab_size = logits.len();
 
-        // For zero temperature, use deterministic argmax (greedy decoding)
-        if temperature == 0.0 {
-            let max_idx = logits
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(idx, _)| idx)
-                .unwrap_or(0);
-            return Ok(max_idx as u32);
-        }
-
-        // Apply temperature scaling
-        let scaled: Vec<f32> = logits.iter()
-            .map(|&logit| logit / temperature)
-            .collect();
-
-        // Get top_k if specified
-        let top_k = top_k.unwrap_or(vocab_size);
-        let mut sorted_indices: Vec<usize> = (0..vocab_size).collect();
-        sorted_indices.sort_by(|&a, &b| {
-            scaled[b].partial_cmp(&scaled[a]).unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        // Keep only top k tokens
-        sorted_indices.truncate(top_k);
-
-        // Apply softmax to get probabilities for top-k tokens
-        let mut probs: Vec<f32> = sorted_indices.iter()
-            .map(|&i| {
-                let logit = scaled[i];
-                // For numerical stability, subtract max before exp
-                logit.exp()
-            })
-            .collect();
-
-        let sum: f32 = probs.iter().sum();
-        if sum == 0.0 {
-            // Fallback to argmax if all probabilities are zero
-            return Ok(sorted_indices[0] as u32);
-        }
-
-        // Normalize probabilities
-        for prob in probs.iter_mut() {
-            *prob /= sum;
-        }
-
-        // Apply top-p (nucleus sampling) if specified
-        if top_p < 1.0 {
-            let mut cumulative = 0.0;
-            let mut cutoff_idx = sorted_indices.len();
-
-            for (idx, &prob) in probs.iter().enumerate() {
-                cumulative += prob;
-                if cumulative >= top_p {
-                    cutoff_idx = idx + 1;
-                    break;
-                }
-            }
-
-            // Renormalize after cutoff
-            sorted_indices.truncate(cutoff_idx);
-            probs.truncate(cutoff_idx);
-
-            let sum: f32 = probs.iter().sum();
-            if sum > 0.0 {
-                for prob in probs.iter_mut() {
-                    *prob /= sum;
-                }
-            }
-        }
-
-        // Sample from the distribution using a simple approach
-        // Use system time for randomness
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| InfluenceError::LocalModelError(format!("Failed to get time: {}", e)))?
-            .as_nanos() as f32;
-
-        let random_value = (nanos % 1000000.0) / 1000000.0;
-        let mut cumulative = 0.0;
-
-        for (idx, &prob) in probs.iter().enumerate() {
-            cumulative += prob;
-            if random_value <= cumulative {
-                return Ok(sorted_indices[idx] as u32);
-            }
-        }
-
-        // Fallback to last token (shouldn't happen if probabilities sum to 1)
-        Ok(sorted_indices[sorted_indices.len() - 1] as u32)
-    }
-
-    fn stream_piece(tokenizer: &Tokenizer, token_id: u32, started: &mut bool) -> Result<Option<String>> {
-        if let Some(raw) = tokenizer.id_to_token(token_id) {
-            if raw == "</s>" || raw == "<s>" || raw == "<unk>" {
-                return Ok(None);
-            }
-
-            let text = tokenizer.decode(&[token_id], false)?;
-            if text.is_empty() {
-                return Ok(None);
-            }
-
-            let mut piece = String::new();
-            if raw.starts_with('▁') && *started {
-                piece.push(' ');
-            }
-            piece.push_str(&text);
-            *started = true;
-            return Ok(Some(piece));
-        }
-
-        Ok(None)
-    }
 
     pub async fn generate_stream_with<F>(&mut self, prompt: &str, max_tokens: usize, temp: f32, mut emit: F) -> Result<()>
     where
@@ -619,10 +340,10 @@ impl LocalModel {
                 let last_logits = &logits_vec[0];
 
                 // Sample token using temperature, top-k, and top-p
-                let mut next = Self::do_sample(last_logits, temp, top_p, top_k)?;
+                let mut next = do_sample(last_logits, temp, top_p, top_k)?;
 
                 let mut started = false;
-                if let Some(piece) = Self::stream_piece(&self.tokenizer, next, &mut started)? {
+                if let Some(piece) = stream_piece(&self.tokenizer, next, &mut started)? {
                     emit(piece)?;
                 }
 
@@ -641,8 +362,8 @@ impl LocalModel {
                     let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
                     let token_logits = &logits_vec[0];
 
-                    next = Self::do_sample(token_logits, temp, top_p, top_k)?;
-                    if let Some(piece) = Self::stream_piece(&self.tokenizer, next, &mut started)? {
+                    next = do_sample(token_logits, temp, top_p, top_k)?;
+                    if let Some(piece) = stream_piece(&self.tokenizer, next, &mut started)? {
                         emit(piece)?;
                     }
 
@@ -687,9 +408,9 @@ impl LocalModel {
                 let last_logits = last_logits
                     .ok_or_else(|| InfluenceError::LocalModelError("Empty prompt".to_string()))?;
                 let token_logits = last_logits.as_slice();
-                let mut next = Self::do_sample(token_logits, temp, top_p, top_k)?;
+                let mut next = do_sample(token_logits, temp, top_p, top_k)?;
 
-                if let Some(piece) = Self::stream_piece(&self.tokenizer, next, &mut started)? {
+                if let Some(piece) = stream_piece(&self.tokenizer, next, &mut started)? {
                     emit(piece)?;
                 }
 
@@ -706,8 +427,8 @@ impl LocalModel {
                     let token_logits = logits_vec.get(0).ok_or_else(|| {
                         InfluenceError::LocalModelError("Mamba logits were empty".to_string())
                     })?;
-                    next = Self::do_sample(token_logits, temp, top_p, top_k)?;
-                    if let Some(piece) = Self::stream_piece(&self.tokenizer, next, &mut started)? {
+                    next = do_sample(token_logits, temp, top_p, top_k)?;
+                    if let Some(piece) = stream_piece(&self.tokenizer, next, &mut started)? {
                         emit(piece)?;
                     }
                 }
@@ -723,8 +444,8 @@ impl LocalModel {
                 let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
                 let token_logits = &logits_vec[0];
 
-                let mut next = Self::do_sample(token_logits, temp, top_p, top_k)?;
-                if let Some(piece) = Self::stream_piece(&self.tokenizer, next, &mut started)? {
+                let mut next = do_sample(token_logits, temp, top_p, top_k)?;
+                if let Some(piece) = stream_piece(&self.tokenizer, next, &mut started)? {
                     emit(piece)?;
                 }
 
@@ -741,8 +462,8 @@ impl LocalModel {
                     let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
                     let token_logits = &logits_vec[0];
 
-                    next = Self::do_sample(token_logits, temp, top_p, top_k)?;
-                    if let Some(piece) = Self::stream_piece(&self.tokenizer, next, &mut started)? {
+                    next = do_sample(token_logits, temp, top_p, top_k)?;
+                    if let Some(piece) = stream_piece(&self.tokenizer, next, &mut started)? {
                         emit(piece)?;
                     }
                 }
@@ -847,13 +568,13 @@ mod tests {
         let logits = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
         // Test with temperature = 1.0 (no scaling)
-        let result = LocalModel::do_sample(&logits, 1.0, 1.0, None);
+        let result = do_sample(&logits, 1.0, 1.0, None);
         assert!(result.is_ok());
         let token = result.unwrap();
         assert!(token < 5);
 
         // Test with temperature = 0.5 (more deterministic)
-        let result = LocalModel::do_sample(&logits, 0.5, 1.0, None);
+        let result = do_sample(&logits, 0.5, 1.0, None);
         assert!(result.is_ok());
     }
 
@@ -862,7 +583,7 @@ mod tests {
         let logits = vec![1.0, 2.0, 3.0, 4.0, 5.0, 0.1, 0.2];
 
         // Sample from top 3 tokens only
-        let result = LocalModel::do_sample(&logits, 1.0, 1.0, Some(3));
+        let result = do_sample(&logits, 1.0, 1.0, Some(3));
         assert!(result.is_ok());
         let token = result.unwrap();
         // Should sample from top 3 tokens (indices 2, 3, 4 with values 3.0, 4.0, 5.0)
@@ -874,7 +595,7 @@ mod tests {
         let logits = vec![0.1, 0.2, 0.3, 4.0, 5.0];
 
         // Sample with top_p = 0.9 (nucleus sampling)
-        let result = LocalModel::do_sample(&logits, 1.0, 0.9, None);
+        let result = do_sample(&logits, 1.0, 0.9, None);
         assert!(result.is_ok());
     }
 
@@ -883,7 +604,7 @@ mod tests {
         let logits = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
         // Zero temperature should be nearly deterministic (argmax)
-        let result = LocalModel::do_sample(&logits, 0.0, 1.0, None);
+        let result = do_sample(&logits, 0.0, 1.0, None);
         assert!(result.is_ok());
         // With zero temperature, should pick the highest logit (index 4)
         let token = result.unwrap();
@@ -894,7 +615,7 @@ mod tests {
     fn test_do_sample_single_token() {
         let logits = vec![5.0];
 
-        let result = LocalModel::do_sample(&logits, 1.0, 1.0, None);
+        let result = do_sample(&logits, 1.0, 1.0, None);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0);
     }
@@ -904,7 +625,7 @@ mod tests {
         let logits = vec![0.1, 0.2, 0.3, 4.0, 5.0, 0.5, 0.6, 0.7];
 
         // Combine top-k and top-p
-        let result = LocalModel::do_sample(&logits, 1.0, 0.8, Some(4));
+        let result = do_sample(&logits, 1.0, 0.8, Some(4));
         assert!(result.is_ok());
         let token = result.unwrap();
         // Should be within top-k range
@@ -931,7 +652,7 @@ mod tests {
             r#"{"model_type":"mamba"}"#,
         )
         .unwrap();
-        let arch = LocalModel::detect_architecture(tmp.path()).unwrap();
+        let arch = detect_architecture(tmp.path()).unwrap();
         assert!(matches!(arch, ModelArchitecture::Mamba));
     }
 
@@ -943,7 +664,7 @@ mod tests {
             r#"{"model_type":"granitemoehybrid","layer_types":["attention","attention"]}"#,
         )
         .unwrap();
-        let arch = LocalModel::detect_architecture(tmp.path()).unwrap();
+        let arch = detect_architecture(tmp.path()).unwrap();
         assert!(matches!(arch, ModelArchitecture::GraniteMoeHybrid));
     }
 
@@ -955,7 +676,7 @@ mod tests {
             r#"{"model_type":"granitemoehybrid","layer_types":["attention","mamba"]}"#,
         )
         .unwrap();
-        let err = LocalModel::detect_architecture(tmp.path()).unwrap_err();
+        let err = detect_architecture(tmp.path()).unwrap_err();
         assert!(err.to_string().to_lowercase().contains("mamba"));
     }
 
@@ -967,7 +688,7 @@ mod tests {
             r#"{"model_type":"llama","num_experts":8}"#,
         )
         .unwrap();
-        let err = LocalModel::detect_architecture(tmp.path()).unwrap_err();
+        let err = detect_architecture(tmp.path()).unwrap_err();
         assert!(err.to_string().to_lowercase().contains("moe"));
     }
 
@@ -981,7 +702,7 @@ mod tests {
             b"fake gguf content",
         ).unwrap();
 
-        let arch = LocalModel::detect_architecture(tmp.path()).unwrap();
+        let arch = detect_architecture(tmp.path()).unwrap();
         assert!(matches!(arch, ModelArchitecture::LlamaQuantized));
     }
 
@@ -1000,7 +721,7 @@ mod tests {
         ).unwrap();
 
         // GGUF should be detected first
-        let arch = LocalModel::detect_architecture(tmp.path()).unwrap();
+        let arch = detect_architecture(tmp.path()).unwrap();
         assert!(matches!(arch, ModelArchitecture::LlamaQuantized));
     }
 
@@ -1019,7 +740,7 @@ mod tests {
         ).unwrap();
 
         // Should detect GGUF architecture
-        let arch = LocalModel::detect_architecture(tmp.path()).unwrap();
+        let arch = detect_architecture(tmp.path()).unwrap();
         assert!(matches!(arch, ModelArchitecture::LlamaQuantized));
     }
 
@@ -1038,7 +759,7 @@ mod tests {
         ).unwrap();
 
         // Without gguf feature, should fall back to config.json
-        let arch = LocalModel::detect_architecture(tmp.path()).unwrap();
+        let arch = detect_architecture(tmp.path()).unwrap();
         assert!(matches!(arch, ModelArchitecture::Llama));
     }
 }

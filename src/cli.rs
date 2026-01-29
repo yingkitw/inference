@@ -161,6 +161,46 @@ pub enum Commands {
 
     #[command(about = "Show current configuration settings")]
     Config,
+
+    #[command(about = "Display detailed model information")]
+    Show {
+        #[arg(help = "Model name or path")]
+        model: String,
+    },
+
+    #[command(about = "Remove a downloaded model from disk")]
+    #[command(visible_alias = "rm")]
+    Remove {
+        #[arg(help = "Model name or path to remove")]
+        model: String,
+
+        #[arg(short, long, help = "Skip confirmation prompt")]
+        force: bool,
+    },
+
+    #[command(about = "Show running model servers")]
+    Ps,
+
+    #[command(about = "Create a copy of a model")]
+    Copy {
+        #[arg(help = "Source model name or path")]
+        source: String,
+
+        #[arg(help = "Destination model name or path")]
+        destination: String,
+    },
+
+    #[command(about = "Show detailed model metadata and capabilities")]
+    Info {
+        #[arg(help = "Model name or path")]
+        model: String,
+    },
+
+    #[command(about = "Verify model integrity with checksum validation")]
+    Verify {
+        #[arg(help = "Model name or path to verify")]
+        model: String,
+    },
 }
 
 #[cfg(test)]
