@@ -1,3 +1,7 @@
+//! HTTP server for Influence LLM inference API
+//!
+//! Provides an Ollama-compatible REST API for running local LLM inference.
+
 use crate::error::{InfluenceError, Result};
 use crate::local::{DevicePreference, LocalModel, LocalModelConfig};
 use axum::{
@@ -23,33 +27,47 @@ use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info};
 
+/// Application state shared across all HTTP requests
 #[derive(Clone)]
 pub struct AppState {
     model: Arc<Mutex<LocalModel>>,
 }
 
+/// Request payload for the `/api/generate` endpoint
+///
+/// Compatible with Ollama's generate API format.
 #[derive(Debug, Deserialize)]
 pub struct GenerateRequest {
+    /// The prompt text to generate from
     pub prompt: String,
+    /// Optional system prompt to guide generation
     #[serde(default)]
     pub system: Option<String>,
+    /// Maximum number of tokens to generate (default: from config)
     #[serde(default)]
     pub max_tokens: Option<usize>,
+    /// Sampling temperature (0.0 = greedy, higher = more random)
     #[serde(default)]
     pub temperature: Option<f32>,
+    /// Top-p (nucleus) sampling threshold
     #[serde(default)]
     pub top_p: Option<f32>,
+    /// Top-k sampling (keep only top k tokens)
     #[serde(default)]
     pub top_k: Option<usize>,
+    /// Repeat penalty for tokens
     #[serde(default)]
     pub repeat_penalty: Option<f32>,
 }
 
+/// Response payload for the `/api/generate` endpoint
 #[derive(Debug, Serialize)]
 pub struct GenerateResponse {
+    /// The generated text
     pub text: String,
 }
 
+/// Ollama-compatible generation options
 #[derive(Debug, Deserialize)]
 pub struct OllamaOptions {
     #[serde(default)]

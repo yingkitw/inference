@@ -66,6 +66,19 @@ pub async fn download_model(
         let url = format!("{}/{}/resolve/main/{}", mirror_url, model, file);
         let file_path = output_dir.join(file);
 
+        // Validate the file path is within the output directory (prevent path traversal)
+        let canonical_file = file_path
+            .canonicalize()
+            .unwrap_or_else(|_| file_path.clone());
+        let canonical_output = output_dir
+            .canonicalize()
+            .unwrap_or_else(|_| output_dir.clone());
+
+        if !canonical_file.starts_with(&canonical_output) {
+            warn!("Skipping file with invalid path: {}", file);
+            continue;
+        }
+
         if let Some(parent) = file_path.parent() {
             fs::create_dir_all(parent).await?;
         }
@@ -117,11 +130,19 @@ pub async fn download_model(
 
 fn get_output_dir(model: &str, output: Option<&Path>) -> Result<PathBuf> {
     if let Some(path) = output {
-        return Ok(path.to_path_buf());
+        // Validate the custom output path to prevent directory traversal issues
+        let canonical_path = path
+            .canonicalize()
+            .map_err(|e| InfluenceError::DownloadError(format!("Invalid output path '{}': {}", path.display(), e)))?;
+        return Ok(canonical_path);
     }
 
     // Use a local working folder "models" instead of system directory
-    let model_name = model.replace('/', "_");
+    // Sanitize model name to prevent directory traversal
+    let model_name = model
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect::<String>();
     Ok(PathBuf::from("models").join(model_name))
 }
 
@@ -230,6 +251,36 @@ async fn get_model_files(client: &Client, mirror_url: &str, model: &str) -> Resu
 }
 
 async fn download_file(client: &Client, url: &str, path: &Path) -> Result<()> {
+    const MAX_RETRIES: u32 = 3;
+    let mut attempt = 0;
+
+    loop {
+        attempt += 1;
+
+        match download_file_attempt(client, url, path).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                // Don't retry on 404 or 403 (client errors)
+                if e.to_string().contains("404") || e.to_string().contains("403") {
+                    return Err(e);
+                }
+
+                if attempt >= MAX_RETRIES {
+                    return Err(InfluenceError::DownloadError(format!(
+                        "Failed after {} attempts: {}",
+                        MAX_RETRIES, e
+                    )));
+                }
+
+                let delay = 2_u64.pow(attempt - 1);
+                warn!("Download attempt {} failed: {}. Retrying in {}s...", attempt, e, delay);
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+            }
+        }
+    }
+}
+
+async fn download_file_attempt(client: &Client, url: &str, path: &Path) -> Result<()> {
     let response = client.get(url).send().await?;
 
     if !response.status().is_success() {
@@ -391,7 +442,9 @@ mod tests {
     async fn test_get_output_dir() {
         let temp_dir = TempDir::new().unwrap();
         let output = get_output_dir("ibm/granite", Some(temp_dir.path())).unwrap();
-        assert_eq!(output, temp_dir.path());
+        // Compare canonicalized paths since get_output_dir now canonicalizes
+        let canonical_input = temp_dir.path().canonicalize().unwrap();
+        assert_eq!(output, canonical_input);
     }
 
     #[tokio::test]

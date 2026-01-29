@@ -108,7 +108,7 @@ impl LocalModel {
 
         if !config.model_path.exists() {
             return Err(InfluenceError::ModelNotFound(format!(
-                "Model directory not found: {}",
+                "Model directory not found: {}\n\nHint: Use 'influence download <model>' to download a model first.\nAvailable models: 'influence models' to list downloaded models.",
                 config.model_path.display()
             )));
         }
@@ -453,95 +453,16 @@ impl LocalModel {
             .or_else(|| self.tokenizer.token_to_id("<EOS>"))
     }
 
-    /// Sample a token from logits using temperature, top-k, and top-p sampling
-    fn sample_token(&self, logits: &[f32], temperature: f32) -> Result<u32> {
-        let vocab_size = logits.len();
-
-        // Apply temperature scaling
-        let scaled: Vec<f32> = logits.iter()
-            .map(|&logit| if temperature > 0.0 { logit / temperature } else { logit })
-            .collect();
-
-        // Get top_k if specified
-        let top_k = self.config.top_k.unwrap_or(vocab_size);
-        let mut sorted_indices: Vec<usize> = (0..vocab_size).collect();
-        sorted_indices.sort_by(|&a, &b| {
-            scaled[b].partial_cmp(&scaled[a]).unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        // Keep only top k tokens
-        sorted_indices.truncate(top_k);
-
-        // Apply softmax to get probabilities for top-k tokens
-        let mut probs: Vec<f32> = sorted_indices.iter()
-            .map(|&i| {
-                let logit = scaled[i];
-                // For numerical stability, subtract max before exp
-                logit.exp()
-            })
-            .collect();
-
-        let sum: f32 = probs.iter().sum();
-        if sum == 0.0 {
-            // Fallback to argmax if all probabilities are zero
-            return Ok(sorted_indices[0] as u32);
-        }
-
-        // Normalize probabilities
-        for prob in probs.iter_mut() {
-            *prob /= sum;
-        }
-
-        // Apply top-p (nucleus sampling) if specified
-        let top_p = self.config.top_p;
-        if top_p < 1.0 {
-            let mut cumulative = 0.0;
-            let mut cutoff_idx = sorted_indices.len();
-
-            for (idx, &prob) in probs.iter().enumerate() {
-                cumulative += prob;
-                if cumulative >= top_p {
-                    cutoff_idx = idx + 1;
-                    break;
-                }
-            }
-
-            // Renormalize after cutoff
-            sorted_indices.truncate(cutoff_idx);
-            probs.truncate(cutoff_idx);
-
-            let sum: f32 = probs.iter().sum();
-            if sum > 0.0 {
-                for prob in probs.iter_mut() {
-                    *prob /= sum;
-                }
-            }
-        }
-
-        // Sample from the distribution using a simple approach
-        // Use system time for randomness
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| InfluenceError::LocalModelError(format!("Failed to get time: {}", e)))?
-            .as_nanos() as f32;
-
-        let random_value = (nanos % 1000000.0) / 1000000.0;
-        let mut cumulative = 0.0;
-
-        for (idx, &prob) in probs.iter().enumerate() {
-            cumulative += prob;
-            if random_value <= cumulative {
-                return Ok(sorted_indices[idx] as u32);
-            }
-        }
-
-        // Fallback to last token (shouldn't happen if probabilities sum to 1)
-        Ok(sorted_indices[sorted_indices.len() - 1] as u32)
-    }
-
-    /// Sample a token from logits using temperature, top-k, and top-p sampling with explicit config
-    /// This version takes config values as parameters to avoid borrow checker issues
+    /// Sample a token from logits using temperature, top-k, and top-p sampling.
+    ///
+    /// # Arguments
+    /// * `logits` - Raw output logits from the model
+    /// * `temperature` - Sampling temperature (0.0 = greedy, higher = more random)
+    /// * `top_p` - Nucleus sampling threshold (0.0 to 1.0, 1.0 = disabled)
+    /// * `top_k` - Top-k sampling (None = disabled, Some(n) = keep only top n tokens)
+    ///
+    /// # Returns
+    /// The sampled token ID
     fn do_sample(logits: &[f32], temperature: f32, top_p: f32, top_k: Option<usize>) -> Result<u32> {
         let vocab_size = logits.len();
 

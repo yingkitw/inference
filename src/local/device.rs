@@ -1,9 +1,32 @@
+//! Device selection and management for model inference
+//!
+//! This module handles device selection (CPU/GPU) with automatic fallback
+//! based on feature flags and hardware availability.
+
 use crate::error::{InfluenceError, Result};
 use crate::local::DevicePreference;
 use candle_core::Device;
 use tracing::{info, warn};
 
-/// Get the appropriate device based on preference and availability
+/// Get the appropriate device based on preference and availability.
+///
+/// # Arguments
+/// * `pref` - Device preference (Auto, Cpu, Metal, or Cuda)
+/// * `index` - GPU device index (for Metal/Cuda)
+///
+/// # Returns
+/// The selected Candle Device
+///
+/// # Device Selection Logic
+/// - `Auto`: Tries Metal → CUDA → CPU (first available)
+/// - `Cpu`: Always returns CPU device
+/// - `Metal`: Returns Metal GPU (requires `metal` feature)
+/// - `Cuda`: Returns CUDA GPU (requires `cuda` feature)
+///
+/// # Errors
+/// Returns `InfluenceError` if:
+/// - Metal/CUDA requested but feature not enabled
+/// - Metal/CUDA requested but device not available
 pub fn get_device(pref: DevicePreference, index: usize) -> Result<Device> {
     match pref {
         DevicePreference::Cpu => {

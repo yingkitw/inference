@@ -32,12 +32,18 @@ impl LocalBackend {
 
         let config_path = config.model_path.join("config.json");
         if !config_path.exists() {
-            return Err(InfluenceError::LocalModelError("config.json not found".to_string()));
+            return Err(InfluenceError::LocalModelError(format!(
+                "config.json not found in {}\n\nHint: Ensure the model directory contains all required files.\nUse 'influence download <model>' to re-download the model.",
+                config.model_path.display()
+            )));
         }
 
         let config_content = fs::read_to_string(&config_path)?;
         let config_json: serde_json::Value = serde_json::from_str(&config_content)
-            .map_err(|e| InfluenceError::LocalModelError(format!("Failed to parse config: {}", e)))?;
+            .map_err(|e| InfluenceError::LocalModelError(format!(
+                "Failed to parse config.json: {}\n\nHint: The model file may be corrupted. Try re-downloading: 'influence download <model>'",
+                e
+            )))?;
 
         // Extract parameters from config.json
         let vocab_size = config_json.get("vocab_size")
@@ -62,8 +68,7 @@ impl LocalBackend {
 
         let num_key_value_heads = config_json.get("num_key_value_heads")
             .and_then(|v| v.as_u64())
-            .or_else(|| Some(num_attention_heads as u64))
-            .unwrap() as usize;
+            .unwrap_or(num_attention_heads as u64) as usize;
 
         let rms_norm_eps = config_json.get("rms_norm_eps")
             .and_then(|v| v.as_f64())
@@ -140,7 +145,10 @@ impl LocalBackend {
 
         let config_path = config.model_path.join("config.json");
         if !config_path.exists() {
-            return Err(InfluenceError::LocalModelError("config.json not found".to_string()));
+            return Err(InfluenceError::LocalModelError(format!(
+                "config.json not found in {}\n\nHint: Ensure the model directory contains all required files.\nUse 'influence download <model>' to re-download the model.",
+                config.model_path.display()
+            )));
         }
 
         let config_content = fs::read_to_string(&config_path)?;
@@ -171,7 +179,10 @@ impl LocalBackend {
 
         let config_path = config.model_path.join("config.json");
         if !config_path.exists() {
-            return Err(InfluenceError::LocalModelError("config.json not found".to_string()));
+            return Err(InfluenceError::LocalModelError(format!(
+                "config.json not found in {}\n\nHint: Ensure the model directory contains all required files.\nUse 'influence download <model>' to re-download the model.",
+                config.model_path.display()
+            )));
         }
 
         let config_content = fs::read_to_string(&config_path)?;
@@ -202,7 +213,10 @@ impl LocalBackend {
 
         let config_path = config.model_path.join("config.json");
         if !config_path.exists() {
-            return Err(InfluenceError::LocalModelError("config.json not found".to_string()));
+            return Err(InfluenceError::LocalModelError(format!(
+                "config.json not found in {}\n\nHint: Ensure the model directory contains all required files.\nUse 'influence download <model>' to re-download the model.",
+                config.model_path.display()
+            )));
         }
 
         let config_content = fs::read_to_string(&config_path)?;
@@ -234,7 +248,10 @@ impl LocalBackend {
 
         let config_path = config.model_path.join("config.json");
         if !config_path.exists() {
-            return Err(InfluenceError::LocalModelError("config.json not found".to_string()));
+            return Err(InfluenceError::LocalModelError(format!(
+                "config.json not found in {}\n\nHint: Ensure the model directory contains all required files.\nUse 'influence download <model>' to re-download the model.",
+                config.model_path.display()
+            )));
         }
 
         let config_content = fs::read_to_string(&config_path)?;
