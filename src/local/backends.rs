@@ -117,7 +117,7 @@ impl LocalBackend {
         let warmup_tokens: usize = std::env::var("INFLUENCE_WARMUP_TOKENS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(6);
+            .unwrap_or(3);
 
         if warmup_tokens > 0 {
             if matches!(device, Device::Metal(_)) {

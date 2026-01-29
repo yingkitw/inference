@@ -337,12 +337,10 @@ pub async fn generate(
 
     // Generate with early stopping if model starts a new turn
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
     let should_stop = AtomicBool::new(false);
-    let output_buffer = Arc::new(Mutex::new(String::new()));
-    let buffer_clone = output_buffer.clone();
+    let mut output_buffer = String::new();
 
-    local_model.generate_stream_with(&effective_prompt, max_tokens, temperature, move |piece| {
+    local_model.generate_stream_with(&effective_prompt, max_tokens, temperature, |piece| {
         if should_stop.load(Ordering::Relaxed) {
             return Ok(());
         }
@@ -353,9 +351,7 @@ pub async fn generate(
             return Ok(());
         }
 
-        if let Ok(mut buffer) = buffer_clone.lock() {
-            buffer.push_str(&piece);
-        }
+        output_buffer.push_str(&piece);
         print!("{}", piece);
         io::stdout().flush().map_err(|e| InfluenceError::LocalModelError(format!("Failed to flush stdout: {}", e)))
     }).await?;
@@ -363,14 +359,9 @@ pub async fn generate(
     println!("\n");
     
     // Render the complete output with markdown formatting
-    if let Ok(buffer) = output_buffer.lock() {
-        let output = buffer.as_str();
-        
-        // Check if output contains code blocks and render them with syntax highlighting
-        if output.contains("```") {
-            println!("\n--- Formatted Output ---\n");
-            formatter.print_markdown(output);
-        }
+    if output_buffer.contains("```") {
+        println!("\n--- Formatted Output ---\n");
+        formatter.print_markdown(&output_buffer);
     }
     
     formatter.print_success("Generation complete");
