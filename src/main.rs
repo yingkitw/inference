@@ -5,6 +5,7 @@ mod error;
 mod format;
 mod influencer;
 mod local;
+mod model_ops;
 mod models;
 mod output;
 mod search;
@@ -139,6 +140,30 @@ async fn main() -> Result<()> {
                 formatter.print_success("Model deployed successfully!");
                 formatter.print_markdown(&format!("\n**Test the deployment:**\n\n```bash\ncurl http://localhost:{}/health\n```\n", port));
             }
+        }
+        Commands::Show { model } => {
+            let ops = model_ops::ModelOperations::new();
+            ops.show(&model)?;
+        }
+        Commands::Remove { model, force } => {
+            let ops = model_ops::ModelOperations::new();
+            ops.remove(&model, force)?;
+        }
+        Commands::Ps => {
+            let ops = model_ops::ModelOperations::new();
+            ops.ps()?;
+        }
+        Commands::Copy { source, destination } => {
+            let ops = model_ops::ModelOperations::new();
+            ops.copy(&source, &destination)?;
+        }
+        Commands::Info { model } => {
+            let ops = model_ops::ModelOperations::new();
+            ops.info(&model)?;
+        }
+        Commands::Verify { model } => {
+            let ops = model_ops::ModelOperations::new();
+            ops.verify(&model)?;
         }
         Commands::Config => {
             let formatter = output::OutputFormatter::new();

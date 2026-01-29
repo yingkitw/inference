@@ -154,12 +154,12 @@
 ## Future Enhancements
 
 ### Ollama-Inspired Commands
-- [ ] `show` - Display detailed model information (parameters, architecture, template details)
-- [ ] `rm` / `remove` - Remove a downloaded model from disk
-- [ ] `ps` - Show running model servers (similar to `ollama ps`)
-- [ ] `copy` - Create a copy of a model
-- [ ] `info` - Show detailed model metadata and capabilities
-- [ ] `verify` - Verify model integrity (checksum validation)
+- [x] `show` - Display detailed model information (parameters, architecture, template details)
+- [x] `rm` / `remove` - Remove a downloaded model from disk
+- [x] `ps` - Show running model servers (similar to `ollama ps`)
+- [x] `copy` - Create a copy of a model
+- [x] `info` - Show detailed model metadata and capabilities
+- [x] `verify` - Verify model integrity (checksum validation)
 
 ### Model Support
 - [ ] Implement Mistral text generation

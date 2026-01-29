@@ -541,4 +541,103 @@ mod tests {
             _ => panic!("Expected Embed command"),
         }
     }
+
+    #[test]
+    fn test_show_command_parsing() {
+        let args = vec!["influence", "show", "TinyLlama/TinyLlama-1.1B-Chat-v1.0"];
+        let cli = Cli::try_parse_from(args);
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Show { model } => {
+                assert_eq!(model, "TinyLlama/TinyLlama-1.1B-Chat-v1.0");
+            }
+            _ => panic!("Expected Show command"),
+        }
+    }
+
+    #[test]
+    fn test_remove_command_parsing() {
+        let args = vec!["influence", "remove", "model-name", "--force"];
+        let cli = Cli::try_parse_from(args);
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Remove { model, force } => {
+                assert_eq!(model, "model-name");
+                assert!(force);
+            }
+            _ => panic!("Expected Remove command"),
+        }
+    }
+
+    #[test]
+    fn test_rm_alias() {
+        let args = vec!["influence", "rm", "model-name"];
+        let cli = Cli::try_parse_from(args);
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Remove { model, force } => {
+                assert_eq!(model, "model-name");
+                assert!(!force);
+            }
+            _ => panic!("Expected Remove command"),
+        }
+    }
+
+    #[test]
+    fn test_ps_command_parsing() {
+        let args = vec!["influence", "ps"];
+        let cli = Cli::try_parse_from(args);
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Ps => {},
+            _ => panic!("Expected Ps command"),
+        }
+    }
+
+    #[test]
+    fn test_copy_command_parsing() {
+        let args = vec!["influence", "copy", "source-model", "dest-model"];
+        let cli = Cli::try_parse_from(args);
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Copy { source, destination } => {
+                assert_eq!(source, "source-model");
+                assert_eq!(destination, "dest-model");
+            }
+            _ => panic!("Expected Copy command"),
+        }
+    }
+
+    #[test]
+    fn test_info_command_parsing() {
+        let args = vec!["influence", "info", "model-name"];
+        let cli = Cli::try_parse_from(args);
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Info { model } => {
+                assert_eq!(model, "model-name");
+            }
+            _ => panic!("Expected Info command"),
+        }
+    }
+
+    #[test]
+    fn test_verify_command_parsing() {
+        let args = vec!["influence", "verify", "model-name"];
+        let cli = Cli::try_parse_from(args);
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Verify { model } => {
+                assert_eq!(model, "model-name");
+            }
+            _ => panic!("Expected Verify command"),
+        }
+    }
 }
