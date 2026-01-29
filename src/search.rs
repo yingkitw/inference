@@ -7,29 +7,21 @@ const DEFAULT_MIRROR: &str = "https://hf-mirror.com";
 
 #[derive(Debug, Deserialize)]
 struct ModelInfo {
-    id: String,
     #[serde(default)]
-    model_id: Option<String>,
+    id: Option<String>,
     #[serde(default)]
-    author: Option<String>,
+    modelId: Option<String>,
+    #[serde(alias = "author")]  // Handle both "author" and "authorId"
     #[serde(default)]
-    created_at: Option<String>,
+    author_name: Option<String>,
     #[serde(default)]
     downloads: Option<u64>,
     #[serde(default)]
     likes: Option<u64>,
     #[serde(default)]
-    tags: Option<Vec<String>>,
-    #[serde(default)]
     pipeline_tag: Option<String>,
     #[serde(default)]
     library_name: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SearchResponse {
-    #[serde(default)]
-    models: Vec<ModelInfo>,
 }
 
 pub async fn search_models(
@@ -70,24 +62,28 @@ pub async fn search_models(
         )));
     }
 
-    let search_result: SearchResponse = response
+    // HuggingFace API returns an array directly, not wrapped in an object
+    let search_result: Vec<ModelInfo> = response
         .json()
         .await
         .map_err(|e| InfluenceError::DownloadError(format!("Failed to parse search results: {}", e)))?;
 
-    if search_result.models.is_empty() {
+    if search_result.is_empty() {
         println!("No models found matching '{}'", query);
         return Ok(());
     }
 
-    println!("\nFound {} models:\n", search_result.models.len());
+    println!("\nFound {} models:\n", search_result.len());
 
-    for (index, model) in search_result.models.iter().enumerate() {
-        let model_id = model.model_id.as_ref().unwrap_or(&model.id);
+    for (index, model) in search_result.iter().enumerate() {
+        let model_id = model.id.as_ref()
+            .or(model.modelId.as_ref())
+            .map(|s| s.as_str())
+            .unwrap_or("unknown");
 
         println!("{}. {}", index + 1, model_id);
 
-        if let Some(author) = &model.author {
+        if let Some(author) = &model.author_name {
             println!("   Author: {}", author);
         }
 
