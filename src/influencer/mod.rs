@@ -76,6 +76,26 @@ pub async fn generate(
     Ok(())
 }
 
+pub async fn embed(text: &str, model_path: &Path, device: &str, device_index: usize) -> Result<()> {
+    info!("Generating embedding");
+
+    let device_preference: DevicePreference = device.parse()?;
+
+    let config = LocalModelConfig {
+        model_path: model_path.to_path_buf(),
+        device_preference,
+        device_index,
+        ..Default::default()
+    };
+
+    let mut local_model = LocalModel::load(config).await?;
+    let embedding = local_model.embed_text(text).await?;
+
+    println!("{}", serde_json::to_string(&embedding).map_err(|e| InfluenceError::JsonError(e))?);
+    
+    Ok(())
+}
+
 /// Interactive chat mode with conversation history
 pub async fn chat(
     model_path: &Path,

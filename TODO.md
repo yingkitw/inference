@@ -61,6 +61,9 @@
 - [x] Add Metal GPU support for macOS - WORKING!
 - [x] Fix token spacing in decoded output - WORKING!
 - [ ] Test with additional model architectures
+- [ ] Validate Mamba generation with a real HF Mamba model
+- [ ] Validate GraniteMoeHybrid generation with an attention-only GraniteMoeHybrid config
+- [ ] Add embeddings support for RoBERTa/ALBERT (or map them to supported candle models)
 - [x] Add CUDA support for Linux/Windows
 - [x] Add --device/--device-index flags for explicit backend selection
 - [ ] Test local generation with an actual Mistral model from HuggingFace
@@ -70,16 +73,29 @@
 
 ### Performance
 - [x] Add GPU support (Metal)
+- [x] Reduce first-token latency on Metal by warming up a few decode steps at model load (set INFLUENCE_WARMUP_TOKENS=0 to disable)
+- [x] KV cache capabilities: Fresh cache per generation request (stateless, memory efficient)
+- [ ] Session-based KV cache reuse for multi-turn conversations (future enhancement)
 - [ ] Implement batch generation
 - [ ] Add model caching in memory
 - [ ] Optimize tokenization performance
+
+### Ollama Compatibility
+- [x] Add Ollama-compatible endpoint: `POST /api/generate` (non-stream JSON response)
+- [x] Add Ollama-compatible streaming for `/api/generate` using NDJSON (one JSON object per line)
+- [x] Map Ollama `options` fields to Influence generation params:
+  - `temperature`, `top_p`, `top_k`, `repeat_penalty`, `num_predict`
+- [x] Add Ollama-compatible endpoint: `POST /api/embeddings` mapped to `influence embed` behavior (BERT only for now)
+- [x] Add minimal Ollama discovery endpoints (TBD): e.g. `/api/tags` for “loaded model” metadata
+- [x] Document Ollama-compat API in README/SPEC (what is supported vs not)
+- [x] Add integration tests for Ollama endpoints (streaming + non-stream)
 
 ### Features
 - [x] Add chat mode with conversation history
 - [x] Add system prompt support
 - [x] Add top-p and top-k sampling options
 - [x] Add repetition penalty control
-- [ ] Add configuration file support
+- [x] Add environment variable configuration (.env file support)
 - [x] Add HTTP server for serving API
 - [x] Add model validation after download
 
@@ -104,12 +120,13 @@
 ## Known Limitations
 
 ### Unsupported Models
-- Mamba/Hybrid models (e.g., GraniteMoeHybrid)
 - Mixture of Experts (MoE) models
-- Encoder-only models (BERT, RoBERTa, ALBERT)
+- GraniteMoeHybrid configs containing Mamba layers
+- Encoder-only text generation (BERT, RoBERTa, ALBERT) (embeddings supported for BERT)
 - Models requiring specialized implementations
 
 ### Current Limitations
 - GPU support via Metal/CUDA available
 - No batch generation
-- Llama-architecture only for inference (Mistral partially implemented)
+- Text generation supported for Llama + Mamba + GraniteMoeHybrid (attention-only)
+- Mistral loading supported but generation not implemented

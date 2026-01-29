@@ -3,9 +3,10 @@ use tokenizers::Tokenizer;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use candle_core::{Device, Tensor, DType};
 use std::io::Write;
+use std::time::Instant;
 
 mod backends;
 mod device;
@@ -18,6 +19,9 @@ pub enum ModelArchitecture {
     Llama,
     LlamaQuantized,
     Mistral,
+    Mamba,
+    GraniteMoeHybrid,
+    Bert,
     Phi,
     Granite,
 }
@@ -120,6 +124,9 @@ impl LocalModel {
                 LocalBackend::load_llama(&config, &device)?
             }
             ModelArchitecture::Mistral => LocalBackend::load_mistral(&config, &device)?,
+            ModelArchitecture::Mamba => LocalBackend::load_mamba(&config, &device)?,
+            ModelArchitecture::GraniteMoeHybrid => LocalBackend::load_granite_moe_hybrid(&config, &device)?,
+            ModelArchitecture::Bert => LocalBackend::load_bert(&config, &device)?,
             _ => {
                 warn!("Architecture {:?} not yet fully implemented", architecture);
                 None
@@ -171,32 +178,50 @@ impl LocalModel {
             .and_then(|v| v.as_str())
             .unwrap_or("llama");
 
-        // Check for encoder-only models (not suitable for text generation)
-        if model_type == "bert" || model_type == "roberta" || model_type == "albert" {
+        // Detect Mixture-of-Experts configs (not yet supported).
+        // Common fields across various MoE families.
+        if config.get("num_local_experts").is_some()
+            || config.get("num_experts").is_some()
+            || config.get("expert_capacity").is_some()
+            || config.get("router_aux_loss_coef").is_some()
+        {
             return Err(InfluenceError::LocalModelError(
-                format!(
-                    "Unsupported model type '{}': This is an encoder-only model.\n\
-                    \n\
-                    Encoder-only models (BERT, RoBERTa, ALBERT) are designed for:\n\
-                    - Text classification\n\
-                    - Named entity recognition\n\
-                    - Question answering\n\
-                    - Embeddings\n\
-                    \n\
-                    They CANNOT generate text. For text generation, use:\n\
-                    - Llama models (meta-llama/Llama-2-7b-hf)\n\
-                    - Mistral models (mistralai/Mistral-7B-v0.1)\n\
-                    - GPT models (decoder-only architectures)\n\
-                    \n\
-                    Try: cargo run -- download -m TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-                    model_type
-                )
+                "Unsupported model architecture: Mixture-of-Experts (MoE) models are not yet supported".to_string(),
             ));
+        }
+
+        // Detect GraniteMoeHybrid. If it contains Mamba layers, candle's implementation bails.
+        if config.get("layer_types").is_some() {
+            let has_mamba_layer = config
+                .get("layer_types")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter().any(|x| {
+                        x.as_str()
+                            .map(|s| s.eq_ignore_ascii_case("mamba"))
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+
+            if has_mamba_layer {
+                return Err(InfluenceError::LocalModelError(
+                    "Unsupported GraniteMoeHybrid config: contains Mamba layers (not supported by candle-transformers yet)".to_string(),
+                ));
+            }
+
+            return Ok(ModelArchitecture::GraniteMoeHybrid);
         }
 
         match model_type {
             "llama" => Ok(ModelArchitecture::Llama),
             "mistral" => Ok(ModelArchitecture::Mistral),
+            "mamba" => Ok(ModelArchitecture::Mamba),
+            "granitemoehybrid" => Ok(ModelArchitecture::GraniteMoeHybrid),
+            "bert" => Ok(ModelArchitecture::Bert),
+            "roberta" | "albert" => Err(InfluenceError::LocalModelError(
+                format!("Unsupported encoder-only model type '{}': only BERT-family configs compatible with candle_transformers::models::bert are supported currently", model_type),
+            )),
             "phi" => Ok(ModelArchitecture::Phi),
             "granite" => Ok(ModelArchitecture::Granite),
             _ => {
@@ -224,10 +249,13 @@ impl LocalModel {
         ))?;
 
         let generated = match backend {
-            LocalBackend::Llama { model, cache } => {
+            LocalBackend::Llama { model, config } => {
+                use candle_transformers::models::llama::Cache;
+                let mut cache = Cache::new(true, DType::F32, config, &self.device)
+                    .map_err(|e| InfluenceError::LocalModelError(format!("Failed to create cache: {}", e)))?;
                 // Process the prompt to fill the cache
                 let prompt_tensor = Tensor::new(&input_ids[..], &self.device)?.unsqueeze(0)?;
-                let logits = model.forward(&prompt_tensor, 0, cache)?;
+                let logits = model.forward(&prompt_tensor, 0, &mut cache)?;
 
                 // logits shape: [batch=1, vocab_size] (model returns logits for last token only)
                 let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
@@ -245,7 +273,7 @@ impl LocalModel {
                     }
 
                     let tensor = Tensor::new(&[next], &self.device)?.unsqueeze(0)?;
-                    let logits = model.forward(&tensor, input_ids.len() + idx - 1, cache)?;
+                    let logits = model.forward(&tensor, input_ids.len() + idx - 1, &mut cache)?;
 
                     // Single token: [batch=1, vocab]
                     let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
@@ -260,6 +288,83 @@ impl LocalModel {
             LocalBackend::Mistral { .. } => {
                 return Err(InfluenceError::LocalModelError(
                     "Mistral backend generation not yet implemented".to_string()
+                ));
+            }
+            LocalBackend::Mamba { model, config } => {
+                use candle_transformers::models::mamba::State as MambaState;
+                let mut state = MambaState::new(1, config, DType::F32, &self.device)
+                    .map_err(|e| InfluenceError::LocalModelError(format!("Failed to create state: {}", e)))?;
+                // Feed the prompt tokens one-by-one to build state.
+                let mut last_logits: Option<Vec<f32>> = None;
+                for &tok in input_ids.iter() {
+                    let token_tensor = Tensor::new(&[tok], &self.device)?;
+                    let logits = model.forward(&token_tensor, &mut state)?;
+                    let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
+                    let row = logits_vec.get(0).ok_or_else(|| {
+                        InfluenceError::LocalModelError("Mamba logits were empty".to_string())
+                    })?;
+                    last_logits = Some(row.clone());
+                }
+
+                let last_logits = last_logits
+                    .ok_or_else(|| InfluenceError::LocalModelError("Empty prompt".to_string()))?;
+                let token_logits = last_logits.as_slice();
+                let mut next = Self::do_sample(token_logits, temperature, top_p, top_k)?;
+
+                let mut generated = vec![next];
+                for _idx in 1..max_tokens {
+                    if let Some(eos) = eos_token {
+                        if next == eos {
+                            break;
+                        }
+                    }
+
+                    let token_tensor = Tensor::new(&[next], &self.device)?;
+                    let logits = model.forward(&token_tensor, &mut state)?;
+                    let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
+                    let token_logits = logits_vec.get(0).ok_or_else(|| {
+                        InfluenceError::LocalModelError("Mamba logits were empty".to_string())
+                    })?;
+                    next = Self::do_sample(token_logits, temperature, top_p, top_k)?;
+                    generated.push(next);
+                }
+
+                generated
+            }
+            LocalBackend::GraniteMoeHybrid { model, config } => {
+                use candle_transformers::models::granitemoehybrid::GraniteMoeHybridCache;
+                let mut cache = GraniteMoeHybridCache::new(true, DType::F32, config, &self.device)
+                    .map_err(|e| InfluenceError::LocalModelError(format!("Failed to create cache: {}", e)))?;
+                // Process the prompt to fill the cache.
+                let prompt_tensor = Tensor::new(&input_ids[..], &self.device)?.unsqueeze(0)?;
+                let logits = model.forward(&prompt_tensor, 0, &mut cache)?;
+                let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
+                let token_logits = &logits_vec[0];
+
+                let mut next = Self::do_sample(token_logits, temperature, top_p, top_k)?;
+                let mut generated = vec![next];
+
+                for idx in 1..max_tokens {
+                    if let Some(eos) = eos_token {
+                        if next == eos {
+                            break;
+                        }
+                    }
+
+                    let tensor = Tensor::new(&[next], &self.device)?.unsqueeze(0)?;
+                    let logits = model.forward(&tensor, input_ids.len() + idx - 1, &mut cache)?;
+                    let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
+                    let token_logits = &logits_vec[0];
+
+                    next = Self::do_sample(token_logits, temperature, top_p, top_k)?;
+                    generated.push(next);
+                }
+
+                generated
+            }
+            LocalBackend::Bert { .. } => {
+                return Err(InfluenceError::LocalModelError(
+                    "Encoder-only models (BERT) cannot generate text. Use embeddings instead.".to_string(),
                 ));
             }
         };
@@ -393,9 +498,20 @@ impl LocalModel {
     fn do_sample(logits: &[f32], temperature: f32, top_p: f32, top_k: Option<usize>) -> Result<u32> {
         let vocab_size = logits.len();
 
+        // For zero temperature, use deterministic argmax (greedy decoding)
+        if temperature == 0.0 {
+            let max_idx = logits
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+            return Ok(max_idx as u32);
+        }
+
         // Apply temperature scaling
         let scaled: Vec<f32> = logits.iter()
-            .map(|&logit| if temperature > 0.0 { logit / temperature } else { logit })
+            .map(|&logit| logit / temperature)
             .collect();
 
         // Get top_k if specified
@@ -502,8 +618,14 @@ impl LocalModel {
     where
         F: FnMut(String) -> Result<()>,
     {
+        let t_tokenize = Instant::now();
         let tokens = self.tokenizer.encode(prompt, false)?;
         let input_ids: Vec<u32> = tokens.get_ids().to_vec();
+        debug!(
+            "Generation timing: tokenization_ms={}, prompt_tokens={}",
+            t_tokenize.elapsed().as_millis(),
+            input_ids.len()
+        );
         let eos_token = self.get_eos_token();
 
         // Extract config values before mutable borrow
@@ -515,10 +637,15 @@ impl LocalModel {
         ))?;
 
         match backend {
-            LocalBackend::Llama { model, cache } => {
+            LocalBackend::Llama { model, config } => {
+                use candle_transformers::models::llama::Cache;
+                let mut cache = Cache::new(true, DType::F32, config, &self.device)
+                    .map_err(|e| InfluenceError::LocalModelError(format!("Failed to create cache: {}", e)))?;
+                let t_prefill = Instant::now();
                 // Process prompt
                 let prompt_tensor = Tensor::new(&input_ids[..], &self.device)?.unsqueeze(0)?;
-                let logits = model.forward(&prompt_tensor, 0, cache)?;
+                let logits = model.forward(&prompt_tensor, 0, &mut cache)?;
+                debug!("Generation timing: llama_prefill_ms={}", t_prefill.elapsed().as_millis());
 
                 let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
                 let last_logits = &logits_vec[0];
@@ -532,13 +659,116 @@ impl LocalModel {
                 }
 
                 // Generate remaining tokens
+                let mut token_count: usize = 0;
+                let mut total_token_ms: u128 = 0;
                 for idx in 1..max_tokens {
+                    let t_step = Instant::now();
                     if let Some(eos) = eos_token {
                         if next == eos { break; }
                     }
 
                     let tensor = Tensor::new(&[next], &self.device)?.unsqueeze(0)?;
-                    let logits = model.forward(&tensor, input_ids.len() + idx - 1, cache)?;
+                    let logits = model.forward(&tensor, input_ids.len() + idx - 1, &mut cache)?;
+
+                    let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
+                    let token_logits = &logits_vec[0];
+
+                    next = Self::do_sample(token_logits, temp, top_p, top_k)?;
+                    if let Some(piece) = Self::stream_piece(&self.tokenizer, next, &mut started)? {
+                        emit(piece)?;
+                    }
+
+                    let step_ms = t_step.elapsed().as_millis();
+                    token_count += 1;
+                    total_token_ms += step_ms;
+                    if idx <= 5 {
+                        debug!("Generation timing: llama_token_idx={} step_ms={}", idx, step_ms);
+                    }
+                }
+
+                if token_count > 0 {
+                    debug!(
+                        "Generation timing: llama_tokens_generated={} avg_token_ms={}",
+                        token_count,
+                        (total_token_ms / token_count as u128)
+                    );
+                }
+            }
+            LocalBackend::Mistral { .. } => {
+                return Err(InfluenceError::LocalModelError(
+                    "Mistral backend generation not yet implemented".to_string()
+                ));
+            }
+            LocalBackend::Mamba { model, config } => {
+                use candle_transformers::models::mamba::State as MambaState;
+                let mut state = MambaState::new(1, config, DType::F32, &self.device)
+                    .map_err(|e| InfluenceError::LocalModelError(format!("Failed to create state: {}", e)))?;
+                let mut started = false;
+
+                let mut last_logits: Option<Vec<f32>> = None;
+                for &tok in input_ids.iter() {
+                    let token_tensor = Tensor::new(&[tok], &self.device)?;
+                    let logits = model.forward(&token_tensor, &mut state)?;
+                    let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
+                    let row = logits_vec.get(0).ok_or_else(|| {
+                        InfluenceError::LocalModelError("Mamba logits were empty".to_string())
+                    })?;
+                    last_logits = Some(row.clone());
+                }
+
+                let last_logits = last_logits
+                    .ok_or_else(|| InfluenceError::LocalModelError("Empty prompt".to_string()))?;
+                let token_logits = last_logits.as_slice();
+                let mut next = Self::do_sample(token_logits, temp, top_p, top_k)?;
+
+                if let Some(piece) = Self::stream_piece(&self.tokenizer, next, &mut started)? {
+                    emit(piece)?;
+                }
+
+                for _idx in 1..max_tokens {
+                    if let Some(eos) = eos_token {
+                        if next == eos {
+                            break;
+                        }
+                    }
+
+                    let token_tensor = Tensor::new(&[next], &self.device)?;
+                    let logits = model.forward(&token_tensor, &mut state)?;
+                    let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
+                    let token_logits = logits_vec.get(0).ok_or_else(|| {
+                        InfluenceError::LocalModelError("Mamba logits were empty".to_string())
+                    })?;
+                    next = Self::do_sample(token_logits, temp, top_p, top_k)?;
+                    if let Some(piece) = Self::stream_piece(&self.tokenizer, next, &mut started)? {
+                        emit(piece)?;
+                    }
+                }
+            }
+            LocalBackend::GraniteMoeHybrid { model, config } => {
+                use candle_transformers::models::granitemoehybrid::GraniteMoeHybridCache;
+                let mut cache = GraniteMoeHybridCache::new(true, DType::F32, config, &self.device)
+                    .map_err(|e| InfluenceError::LocalModelError(format!("Failed to create cache: {}", e)))?;
+                let mut started = false;
+
+                let prompt_tensor = Tensor::new(&input_ids[..], &self.device)?.unsqueeze(0)?;
+                let logits = model.forward(&prompt_tensor, 0, &mut cache)?;
+                let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
+                let token_logits = &logits_vec[0];
+
+                let mut next = Self::do_sample(token_logits, temp, top_p, top_k)?;
+                if let Some(piece) = Self::stream_piece(&self.tokenizer, next, &mut started)? {
+                    emit(piece)?;
+                }
+
+                for idx in 1..max_tokens {
+                    if let Some(eos) = eos_token {
+                        if next == eos {
+                            break;
+                        }
+                    }
+
+                    let tensor = Tensor::new(&[next], &self.device)?.unsqueeze(0)?;
+                    let logits = model.forward(&tensor, input_ids.len() + idx - 1, &mut cache)?;
 
                     let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
                     let token_logits = &logits_vec[0];
@@ -549,9 +779,9 @@ impl LocalModel {
                     }
                 }
             }
-            LocalBackend::Mistral { .. } => {
+            LocalBackend::Bert { .. } => {
                 return Err(InfluenceError::LocalModelError(
-                    "Mistral backend generation not yet implemented".to_string()
+                    "Encoder-only models (BERT) cannot generate text. Use embeddings instead.".to_string(),
                 ));
             }
         }
@@ -559,14 +789,41 @@ impl LocalModel {
         Ok(())
     }
 
-    pub async fn generate_stream(&mut self, prompt: &str, max_tokens: usize, temp: f32) -> Result<()> {
-        self.generate_stream_with(prompt, max_tokens, temp, |piece| {
+    pub async fn generate_stream(&mut self, prompt: &str, max_tokens: usize, temperature: f32) -> Result<()> {
+        self.generate_stream_with(prompt, max_tokens, temperature, |piece| {
             print!("{}", piece);
-            std::io::stdout().flush().unwrap();
+            std::io::stdout().flush()?;
             Ok(())
-        }).await?;
-        println!();
-        Ok(())
+        }).await
+    }
+
+    pub async fn embed_text(&mut self, text: &str) -> Result<Vec<f32>> {
+        let tokens = self.tokenizer.encode(text, false)
+            .map_err(|e| InfluenceError::LocalModelError(format!("Tokenization failed: {}", e)))?;
+        let input_ids: Vec<u32> = tokens.get_ids().to_vec();
+
+        let backend = self.backend.as_ref().ok_or_else(|| InfluenceError::LocalModelError(
+            format!("Model not loaded. Ensure .safetensors files are in: {}", self.config.model_path.display())
+        ))?;
+
+        match backend {
+            LocalBackend::Bert { model } => {
+                let seq_len = input_ids.len();
+                if seq_len == 0 {
+                    return Err(InfluenceError::LocalModelError("Empty input".to_string()));
+                }
+
+                let input = Tensor::new(&input_ids[..], &self.device)?.unsqueeze(0)?;
+                let token_type = Tensor::zeros((1, seq_len), DType::U32, &self.device)?;
+                let output = model.forward(&input, &token_type, None)?;
+                let pooled = output.mean(1)?; // [1, hidden]
+                let pooled = pooled.to_dtype(DType::F32)?.to_vec2::<f32>()?;
+                Ok(pooled[0].clone())
+            }
+            _ => Err(InfluenceError::LocalModelError(
+                "Embeddings are only supported for encoder-only BERT models".to_string(),
+            )),
+        }
     }
 }
 
@@ -590,6 +847,8 @@ pub async fn load_model_from_path(path: &Path) -> Result<LocalModel> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+    use std::fs;
 
     #[test]
     fn test_architecture() {
@@ -686,5 +945,53 @@ mod tests {
         assert_eq!(config.temperature, 0.7);
         assert_eq!(config.top_p, 0.9);
         assert_eq!(config.repeat_penalty, 1.1);
+    }
+
+    #[test]
+    fn test_detect_architecture_mamba() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("config.json"),
+            r#"{"model_type":"mamba"}"#,
+        )
+        .unwrap();
+        let arch = LocalModel::detect_architecture(tmp.path()).unwrap();
+        assert!(matches!(arch, ModelArchitecture::Mamba));
+    }
+
+    #[test]
+    fn test_detect_architecture_granite_moe_hybrid_attention_only() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("config.json"),
+            r#"{"model_type":"granitemoehybrid","layer_types":["attention","attention"]}"#,
+        )
+        .unwrap();
+        let arch = LocalModel::detect_architecture(tmp.path()).unwrap();
+        assert!(matches!(arch, ModelArchitecture::GraniteMoeHybrid));
+    }
+
+    #[test]
+    fn test_detect_architecture_granite_moe_hybrid_with_mamba_layer_rejected() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("config.json"),
+            r#"{"model_type":"granitemoehybrid","layer_types":["attention","mamba"]}"#,
+        )
+        .unwrap();
+        let err = LocalModel::detect_architecture(tmp.path()).unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("mamba"));
+    }
+
+    #[test]
+    fn test_detect_architecture_moe_rejected() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("config.json"),
+            r#"{"model_type":"llama","num_experts":8}"#,
+        )
+        .unwrap();
+        let err = LocalModel::detect_architecture(tmp.path()).unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("moe"));
     }
 }

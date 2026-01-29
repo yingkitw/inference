@@ -113,6 +113,21 @@ pub enum Commands {
         #[arg(long, default_value = "0", help = "Device index (GPU ordinal) when using metal/cuda")]
         device_index: usize,
     },
+
+    #[command(about = "Generate embeddings for encoder-only models (BERT family)")]
+    Embed {
+        #[arg(help = "Input text")]
+        text: String,
+
+        #[arg(short, long, help = "Path to model directory")]
+        model_path: PathBuf,
+
+        #[arg(long, default_value = "auto", help = "Compute device: auto|cpu|metal|cuda")]
+        device: String,
+
+        #[arg(long, default_value = "0", help = "Device index (GPU ordinal) when using metal/cuda")]
+        device_index: usize,
+    },
 }
 
 #[cfg(test)]
@@ -399,6 +414,50 @@ mod tests {
                 assert_eq!(repeat_penalty, 1.05);
             }
             _ => panic!("Expected Generate command"),
+        }
+    }
+
+    #[test]
+    fn test_embed_command_parsing() {
+        let args = vec![
+            "influence",
+            "embed",
+            "Hello world",
+            "--model-path",
+            "/models",
+            "--device",
+            "cpu",
+            "--device-index",
+            "1",
+        ];
+        let cli = Cli::try_parse_from(args);
+
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Embed { text, model_path, device, device_index } => {
+                assert_eq!(text, "Hello world");
+                assert_eq!(model_path, PathBuf::from("/models"));
+                assert_eq!(device, "cpu");
+                assert_eq!(device_index, 1);
+            }
+            _ => panic!("Expected Embed command"),
+        }
+    }
+
+    #[test]
+    fn test_embed_default_values() {
+        let args = vec!["influence", "embed", "x", "--model-path", "/models"];
+        let cli = Cli::try_parse_from(args);
+
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Embed { device, device_index, .. } => {
+                assert_eq!(device, "auto");
+                assert_eq!(device_index, 0);
+            }
+            _ => panic!("Expected Embed command"),
         }
     }
 }

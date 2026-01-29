@@ -206,10 +206,10 @@ The CLI follows the KISS principle:
 
 ### Environment Variables
 
-No environment variables required for local inference:
-- Purely local operation
-- No API keys needed
-- No network dependency for generation
+No environment variables are required for basic local inference.
+
+Optional environment variables:
+- `INFLUENCE_WARMUP_TOKENS` (macOS + Metal + Llama): controls a short warmup during model load to reduce first-token latency caused by Metal kernel compilation. Set to `0` to disable.
 
 ## Logging
 
@@ -300,8 +300,5 @@ RUST_LOG=influence=debug cargo run -- generate "Hello" --model-path ./model
 
 ## Known Limitations
 
-1. **CPU Only**: GPU support not yet implemented
-2. **Llama Architecture**: Only Llama-style models for inference
-3. **Argmax Sampling**: No nucleus or top-k sampling yet
-4. **No Conversation Memory**: Each generation is independent
-5. **No Batch Processing**: Single prompt only
+1. **No batch processing**: Single prompt only
+2. **Some architectures not supported**: MoE models are rejected; GraniteMoeHybrid with Mamba layers is rejected

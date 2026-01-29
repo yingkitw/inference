@@ -1,5 +1,5 @@
 use crate::error::{InfluenceError, Result};
-use futures::StreamExt;
+use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use serde::Deserialize;

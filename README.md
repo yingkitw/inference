@@ -92,17 +92,18 @@ influence generate "Write a technical introduction to vector databases" \
 
 ## Current Status
 
-**Version 0.1.0** - Core Features Working
-
-- OK Model search on HuggingFace
-- OK Model downloading with progress tracking
-- OK Local Llama-architecture inference (Llama, Mistral, Phi, Granite)
-- OK Token spacing and formatting
-- OK Metal GPU acceleration on macOS (enabled by default)
-- OK Streaming text generation
-- OK Temperature-based sampling
-- OK KV caching for performance
-- OK Architecture detection with helpful error messages
+**Working:**
+- Model search and download from Hugging Face
+- Local inference with Llama-architecture models (including TinyLlama, Llama 2/3)
+- GPU acceleration (Metal on macOS, CUDA on Linux/Windows)
+- Streaming generation with fresh KV cache per request
+- Interactive chat mode with conversation history
+- Web API server (REST + SSE streaming)
+- Top-k, top-p sampling and temperature control
+- Repetition penalty
+- System prompt support
+- Metal GPU warmup for reduced first-token latency
+- Ollama-compatible API endpoints (`/api/generate`, `/api/embeddings`, `/api/tags`)
 
 **Tested Models:**
 - `TinyLlama/TinyLlama-1.1B-Chat-v1.0` - Working perfectly
@@ -133,6 +134,45 @@ cargo build --release
 ```bash
 cargo build --release --no-default-features
 ```
+
+## Configuration
+
+Influence supports configuration via environment variables for convenience. Create a `.env` file in the project root:
+
+```bash
+cp .env.example .env
+# Edit .env with your preferred defaults
+```
+
+**Available environment variables:**
+
+```bash
+# Model Configuration
+INFLUENCE_MODEL_PATH=./models/TinyLlama_TinyLlama-1.1B-Chat-v1.0
+
+# Generation Parameters
+INFLUENCE_TEMPERATURE=0.7
+INFLUENCE_TOP_P=0.9
+INFLUENCE_TOP_K=
+INFLUENCE_REPEAT_PENALTY=1.1
+INFLUENCE_MAX_TOKENS=512
+
+# Device Configuration
+INFLUENCE_DEVICE=auto
+INFLUENCE_DEVICE_INDEX=0
+
+# Server Configuration
+INFLUENCE_PORT=8080
+
+# Performance Tuning
+INFLUENCE_WARMUP_TOKENS=6
+
+# Download Configuration
+INFLUENCE_MIRROR=https://hf-mirror.com
+INFLUENCE_OUTPUT_DIR=./models
+```
+
+**Priority:** CLI arguments > Environment variables > Built-in defaults
 
 ## Command Reference
 
@@ -192,9 +232,12 @@ influence generate <prompt> [options]
 **Examples:**
 
 ```bash
-# Basic generation
+# Basic generation (with explicit model path)
 influence generate "What is machine learning?" \
   --model-path ./models/TinyLlama_TinyLlama-1.1B-Chat-v1.0
+
+# Or use .env configuration (set INFLUENCE_MODEL_PATH)
+influence generate "What is machine learning?"
 
 # With custom parameters
 influence generate "Explain async/await" \
@@ -295,6 +338,21 @@ influence generate "Hello, world!" \
 
 ## Technical Details
 
+### Ollama-Compatible API (partial)
+
+When running `influence serve`, Influence also exposes a small subset of Ollama-compatible endpoints. This is intended to make it easier to integrate with tools that already speak Ollama, while keeping Influence’s internal callflow minimal.
+
+**Supported:**
+- `POST /api/generate`
+  - Non-stream: returns JSON
+  - Stream: returns `application/x-ndjson` (one JSON object per line)
+- `POST /api/embeddings` (BERT embeddings only)
+- `POST /api/tags` (returns the currently served model name)
+
+**Notes / limitations:**
+- The `model` field is currently accepted but not used to dynamically switch models (Influence serves one loaded model).
+- Some Ollama fields are ignored for now; only a small set of `options` is mapped.
+
 ### Model Requirements
 
 Each model directory must contain:
@@ -305,12 +363,11 @@ Each model directory must contain:
 ### Supported Architectures
 
 - OK Llama (meta-llama/Llama-2-7b-hf, TinyLlama)
-- OK Mistral (mistralai/Mistral-7B-v0.1)
-- OK Phi (microsoft/phi-2)
-- OK Granite (pure transformer variants)
-- X Mamba/Hybrid models (specialized implementation required)
-- X MoE models (not yet supported)
-- X Encoder-only models (BERT, etc. - not for generation)
+- OK Mamba (mamba family configs)
+- OK GraniteMoeHybrid (attention-only configs)
+- OK Encoder-only embeddings: BERT (`influence embed ...`)
+- X Mixture of Experts (MoE) models (not yet supported)
+- X GraniteMoeHybrid configs containing Mamba layers (not supported by candle-transformers yet)
 
 ### Performance
 
@@ -321,17 +378,22 @@ Each model directory must contain:
 - GPU Acceleration - Metal support on macOS (enabled by default)
 - Proper Token Spacing - Handles SentencePiece space markers correctly
 
-**Memory Usage:**
-- TinyLlama (1B): ~2GB RAM
-- Phi-2 (2.7B): ~4GB RAM
-- Mistral-7B: ~14GB RAM
-- Add model size for total memory requirement
+### Metal Warmup (macOS)
 
-**Performance Tips:**
-- On macOS: Metal GPU is enabled by default for faster inference
-- On Linux/Windows: CUDA support planned (use CPU for now)
-- Use smaller models (TinyLlama) for faster responses
-- Reduce `--max-tokens` for quicker generation
+On **macOS with Metal GPU**, the first few decode steps can be significantly slower due to Metal kernel compilation overhead. To mitigate this, Influence automatically runs a small warmup (default: 6 decode steps) during model load to pre-compile kernels and reduce visible latency for the first generated tokens.
+
+- **Control warmup**: Set `INFLUENCE_WARMUP_TOKENS=0` to disable, or adjust the count (e.g., `INFLUENCE_WARMUP_TOKENS=10`).
+- **When it helps**: Most noticeable with TinyLlama and similar models on Metal.
+- **Trade-off**: Slightly longer model load time in exchange for faster first-token generation.
+
+### KV Cache Behavior
+
+Influence creates a **fresh KV cache** for each generation request:
+
+- **Stateless generation**: Each `generate` or API call starts with a clean cache, ensuring predictable behavior.
+- **No cross-request cache reuse**: Currently, KV cache is not persisted across requests or chat turns.
+- **Memory efficient**: Cache is automatically freed after each generation completes.
+- **Future enhancement**: Session-based cache reuse for multi-turn conversations is planned to reduce redundant prefill computation.
 
 ## Troubleshooting
 

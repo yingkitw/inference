@@ -2,16 +2,25 @@ use crate::error::{InfluenceError, Result};
 use crate::local::LocalModelConfig;
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 use tracing::{info, warn};
-use candle_core::{Device, DType};
+use candle_core::{Device, DType, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::llama::{Llama, Config as LlamaConfig, Cache};
 use candle_transformers::models::mistral::{Config as MistralConfig, Model as MistralModel};
+use candle_transformers::models::mamba::{Config as MambaConfig, Model as MambaModel};
+use candle_transformers::models::granitemoehybrid::{
+    GraniteMoeHybrid, GraniteMoeHybridConfig, GraniteMoeHybridInternalConfig,
+};
+use candle_transformers::models::bert::{BertModel, Config as BertConfig};
 
 /// Local model backend enum supporting multiple architectures
 pub enum LocalBackend {
-    Llama { model: Llama, cache: Cache },
+    Llama { model: Llama, config: LlamaConfig },
     Mistral { model: MistralModel },
+    Mamba { model: MambaModel, config: MambaConfig },
+    GraniteMoeHybrid { model: GraniteMoeHybrid, config: GraniteMoeHybridInternalConfig },
+    Bert { model: BertModel },
 }
 
 impl LocalBackend {
@@ -27,31 +36,6 @@ impl LocalBackend {
         let config_content = fs::read_to_string(&config_path)?;
         let config_json: serde_json::Value = serde_json::from_str(&config_content)
             .map_err(|e| InfluenceError::LocalModelError(format!("Failed to parse config: {}", e)))?;
-
-        // Check for unsupported architectures
-        if let Some(layer_types) = config_json.get("layer_types") {
-            if layer_types.is_array() {
-                return Err(InfluenceError::LocalModelError(
-                    format!(
-                        "Unsupported model architecture: This model uses mixed Mamba+Attention layers.\n\
-                        \n\
-                        The current implementation only supports standard Llama/Mistral transformer models.\n\
-                        \n\
-                        This model (GraniteMoeHybrid) requires a specialized implementation.\n\
-                        \n\
-                        Supported models:\n\
-                        - Standard Llama models (meta-llama/Llama-2-7b-hf, etc.)\n\
-                        - Standard Mistral models (mistralai/Mistral-7B-v0.1, etc.)\n\
-                        - Pure transformer-based Granite models\n\
-                        \n\
-                        For this model, consider using:\n\
-                        - transformers library with Python\n\
-                        - vLLM for high-performance serving\n\
-                        - llama.cpp (if GGUF version available)"
-                    )
-                ));
-            }
-        }
 
         // Extract parameters from config.json
         let vocab_size = config_json.get("vocab_size")
@@ -120,11 +104,32 @@ impl LocalBackend {
         let model = Llama::load(vb, &llama_config)
             .map_err(|e| InfluenceError::LocalModelError(format!("Failed to create model: {}", e)))?;
 
-        let cache = Cache::new(true, DType::F32, &llama_config, device)
-            .map_err(|e| InfluenceError::LocalModelError(format!("Failed to create cache: {}", e)))?;
+        // On Metal, the first few decode steps can be much slower due to kernel compilation.
+        // Warm up a few single-token forward passes with an increasing position to reduce
+        // visible latency for the first generated words.
+        let warmup_tokens: usize = std::env::var("INFLUENCE_WARMUP_TOKENS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(6);
 
-        info!("Model and cache initialized");
-        Ok(Some(LocalBackend::Llama { model, cache }))
+        if warmup_tokens > 0 {
+            if matches!(device, Device::Metal(_)) {
+                info!("Metal warmup: running {} decode step(s)...", warmup_tokens);
+                let t_warm = Instant::now();
+                let mut warm_cache = Cache::new(true, DType::F32, &llama_config, device)
+                    .map_err(|e| InfluenceError::LocalModelError(format!("Failed to create warmup cache: {}", e)))?;
+                let warm_token: u32 = 0;
+                for pos in 0..warmup_tokens {
+                    let tensor = Tensor::new(&[warm_token], device)?
+                        .unsqueeze(0)?;
+                    let _ = model.forward(&tensor, pos, &mut warm_cache)?;
+                }
+                info!("Metal warmup: done in {} ms", t_warm.elapsed().as_millis());
+            }
+        }
+
+        info!("Model initialized");
+        Ok(Some(LocalBackend::Llama { model, config: llama_config }))
     }
 
     /// Load a Mistral backend from model weights
@@ -157,6 +162,100 @@ impl LocalBackend {
 
         info!("Model initialized");
         Ok(Some(LocalBackend::Mistral { model }))
+    }
+
+    pub fn load_mamba(config: &LocalModelConfig, device: &Device) -> Result<Option<Self>> {
+        info!("Loading Mamba model weights...");
+
+        let config_path = config.model_path.join("config.json");
+        if !config_path.exists() {
+            return Err(InfluenceError::LocalModelError("config.json not found".to_string()));
+        }
+
+        let config_content = fs::read_to_string(&config_path)?;
+        let mamba_cfg: MambaConfig = serde_json::from_str(&config_content)
+            .map_err(|e| InfluenceError::LocalModelError(format!("Failed to parse config: {}", e)))?;
+
+        let weight_files = find_weight_files(&config.model_path)?;
+        if weight_files.is_empty() {
+            warn!("No .safetensors files found");
+            return Ok(None);
+        }
+
+        info!("Loading {} weight file(s)...", weight_files.len());
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&weight_files, DType::F32, device)
+                .map_err(|e| InfluenceError::LocalModelError(format!("Failed to load weights: {}", e)))?
+        };
+
+        let model = MambaModel::new(&mamba_cfg, vb)
+            .map_err(|e| InfluenceError::LocalModelError(format!("Failed to create model: {}", e)))?;
+
+        info!("Model initialized");
+        Ok(Some(LocalBackend::Mamba { model, config: mamba_cfg }))
+    }
+
+    pub fn load_granite_moe_hybrid(config: &LocalModelConfig, device: &Device) -> Result<Option<Self>> {
+        info!("Loading GraniteMoeHybrid model weights...");
+
+        let config_path = config.model_path.join("config.json");
+        if !config_path.exists() {
+            return Err(InfluenceError::LocalModelError("config.json not found".to_string()));
+        }
+
+        let config_content = fs::read_to_string(&config_path)?;
+        let cfg: GraniteMoeHybridConfig = serde_json::from_str(&config_content)
+            .map_err(|e| InfluenceError::LocalModelError(format!("Failed to parse config: {}", e)))?;
+        let internal_cfg = cfg.into_config(false);
+
+        let weight_files = find_weight_files(&config.model_path)?;
+        if weight_files.is_empty() {
+            warn!("No .safetensors files found");
+            return Ok(None);
+        }
+
+        info!("Loading {} weight file(s)...", weight_files.len());
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&weight_files, DType::F32, device)
+                .map_err(|e| InfluenceError::LocalModelError(format!("Failed to load weights: {}", e)))?
+        };
+
+        let model = GraniteMoeHybrid::load(vb, &internal_cfg)
+            .map_err(|e| InfluenceError::LocalModelError(format!("Failed to create model: {}", e)))?;
+
+        info!("Model initialized");
+        Ok(Some(LocalBackend::GraniteMoeHybrid { model, config: internal_cfg }))
+    }
+
+    pub fn load_bert(config: &LocalModelConfig, device: &Device) -> Result<Option<Self>> {
+        info!("Loading BERT-family model weights...");
+
+        let config_path = config.model_path.join("config.json");
+        if !config_path.exists() {
+            return Err(InfluenceError::LocalModelError("config.json not found".to_string()));
+        }
+
+        let config_content = fs::read_to_string(&config_path)?;
+        let bert_cfg: BertConfig = serde_json::from_str(&config_content)
+            .map_err(|e| InfluenceError::LocalModelError(format!("Failed to parse config: {}", e)))?;
+
+        let weight_files = find_weight_files(&config.model_path)?;
+        if weight_files.is_empty() {
+            warn!("No .safetensors files found");
+            return Ok(None);
+        }
+
+        info!("Loading {} weight file(s)...", weight_files.len());
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&weight_files, DType::F32, device)
+                .map_err(|e| InfluenceError::LocalModelError(format!("Failed to load weights: {}", e)))?
+        };
+
+        let model = BertModel::load(vb, &bert_cfg)
+            .map_err(|e| InfluenceError::LocalModelError(format!("Failed to create model: {}", e)))?;
+
+        info!("Model initialized");
+        Ok(Some(LocalBackend::Bert { model }))
     }
 }
 

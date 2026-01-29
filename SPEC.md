@@ -14,7 +14,7 @@ Influence is a Rust CLI application for downloading models from HuggingFace mirr
 
 1. **CLI Module** (`cli.rs`)
    - Command-line interface using Clap derive API
-   - Four main commands: search, download, serve, generate
+   - Main commands: search, download, serve, generate, chat, embed
    - Type-safe argument parsing
 
 2. **Download Module** (`download.rs`)
@@ -49,6 +49,38 @@ Influence is a Rust CLI application for downloading models from HuggingFace mirr
    - Centralized error handling with thiserror
    - Custom error types for each failure mode
    - Helpful error messages
+
+7. **Server Module** (`server.rs`)
+   - Axum-based HTTP server (REST + SSE)
+
+8. **Config Module** (`config.rs`)
+   - Environment variable configuration
+   - .env file support via dotenvy
+   - Fallback to sensible defaults
+
+### Configuration System
+
+Influence uses a layered configuration approach:
+
+1. **Built-in defaults** - Sensible defaults for all parameters
+2. **Environment variables** - `.env` file or system environment
+3. **CLI arguments** - Explicit command-line flags (highest priority)
+
+**Priority:** CLI args > Environment vars > Defaults
+
+**Supported environment variables:**
+- `INFLUENCE_MODEL_PATH` - Default model directory
+- `INFLUENCE_TEMPERATURE` - Generation temperature (default: 0.7)
+- `INFLUENCE_TOP_P` - Nucleus sampling threshold (default: 0.9)
+- `INFLUENCE_TOP_K` - Top-k sampling limit (default: none)
+- `INFLUENCE_REPEAT_PENALTY` - Repetition penalty (default: 1.1)
+- `INFLUENCE_MAX_TOKENS` - Max tokens to generate (default: 512)
+- `INFLUENCE_DEVICE` - Compute device: auto|cpu|metal|cuda (default: auto)
+- `INFLUENCE_DEVICE_INDEX` - GPU ordinal (default: 0)
+- `INFLUENCE_PORT` - Server port (default: 8080)
+- `INFLUENCE_WARMUP_TOKENS` - Metal warmup tokens (default: 6)
+- `INFLUENCE_MIRROR` - HuggingFace mirror URL
+- `INFLUENCE_OUTPUT_DIR` - Download output directory
 
 ### Design Principles
 
@@ -146,6 +178,17 @@ Serve the local model over HTTP.
 - `POST /v1/generate` - returns JSON `{ "text": "..." }`
 - `POST /v1/generate_stream` - returns SSE events `event: token` with token chunks in `data:`
 
+**Ollama-compatible endpoints (partial):**
+- `POST /api/generate`
+  - `stream=false` (default): returns JSON `{ model, response, done, created_at }`
+  - `stream=true`: returns `application/x-ndjson` with one JSON object per line (each line is `{ model, response, done, created_at }`)
+  - Supported `options` mapping: `temperature`, `top_p`, `top_k`, `repeat_penalty`, `num_predict`
+- `POST /api/embeddings`
+  - Returns JSON `{ embedding: [f32...] }`
+  - Current limitation: embeddings only supported for encoder-only BERT models
+- `POST /api/tags`
+  - Returns JSON `{ models: [{ name, model, modified_at }] }` for the currently served model
+
 **Error Conditions:**
 - Model path not provided
 - Model directory not found
@@ -159,13 +202,13 @@ Serve the local model over HTTP.
 influence serve [options]
 ```
 
-Placeholder for future HTTP server functionality.
+Serve the local model over HTTP.
 
 **Options:**
 - `-m, --model-path <path>` - Path to model directory
 - `-p, --port <n>` - Port to serve on (default: 8080)
-
-**Status:** Not yet implemented
+- `--device <auto|cpu|metal|cuda>` - Compute backend selection (default: auto)
+- `--device-index <n>` - GPU ordinal for metal/cuda backends (default: 0)
 
 ## Configuration
 
@@ -240,14 +283,14 @@ Parse CLI Arguments
 
 **Currently Supported:**
 - Llama (meta-llama/Llama-2-7b-hf, TinyLlama/TinyLlama-1.1B-Chat-v1.0)
-- Mistral (mistralai/Mistral-7B-v0.1)
-- Phi (microsoft/phi-2)
-- Granite (pure transformer variants)
+- Mamba (mamba family configs)
+- GraniteMoeHybrid (attention-only configs)
+- Encoder-only embeddings: BERT (`influence embed ...`)
 
 **Not Supported:**
-- Mamba/Hybrid models (e.g., GraniteMoeHybrid)
 - Mixture of Experts (MoE) models
-- Encoder-only models (BERT, RoBERTa, ALBERT)
+- GraniteMoeHybrid configs containing Mamba layers (not supported by candle-transformers yet)
+- Encoder-only text generation (BERT, RoBERTa, ALBERT)
 
 ### Model File Requirements
 
@@ -309,16 +352,37 @@ pub enum InfluenceError {
 
 ## Performance Considerations
 
-### Current Optimizations
-1. **KV Caching**: Reuse computed key/value tensors
-2. **Memory Mapping**: mmap .safetensors files
-3. **Async I/O**: Non-blocking downloads
-4. **Streaming Output**: Display tokens as generated
+### KV Caching:
+- Fresh KV cache created per generation request (stateless)
+- Reduces redundant computation within a single generation
+- Cache automatically freed after generation completes
+- Future: Session-based cache reuse for multi-turn conversations
 
-### Performance Characteristics
+### Memory Mapping:
+- Zero-copy model loading with mmap
+- Reduces memory overhead
+
+### Streaming:
+- Display tokens as they're generated
+- Better user experience for long responses
 - **Memory**: Model size + cache + tokenizer
 - **Compute**: CPU-bound (GPU support planned)
 - **Latency**: First token slower, subsequent tokens faster (due to cache)
+
+### Metal Warmup (macOS)
+
+On Metal, the first few decode steps can be significantly slower due to kernel compilation. Influence performs a small warmup when loading Llama models on Metal to reduce visible first-token latency during generation.
+
+- Default: warm up `6` single-token decode steps during model load
+- Environment variable: `INFLUENCE_WARMUP_TOKENS` (default: 6, set to 0 to disable)
+- Runs a few decode steps during model load to pre-compile Metal kernels
+- Reduces first-token latency at the cost of slightly longer model load time
+
+### KV Cache Management:
+- Fresh cache created for each generation request
+- Stateless design ensures predictable behavior
+- No cross-request cache persistence (planned for future sessions feature)
+- Memory efficient: cache freed immediately after generation
 
 ## Security Considerations
 
