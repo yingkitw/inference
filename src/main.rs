@@ -1,5 +1,6 @@
 mod cli;
 mod download;
+mod search;
 mod influencer;
 mod error;
 
@@ -22,6 +23,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Download { model, mirror, output } => {
             download::download_model(&model, mirror.as_deref(), output.as_deref()).await?;
+        }
+        Commands::Search { query, limit, author } => {
+            search::search_models(&query, limit, author.as_deref(), None).await?;
         }
         Commands::Serve { model_path, port } => {
             influencer::serve(model_path.as_deref(), port).await?;
