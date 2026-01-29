@@ -33,6 +33,8 @@ hex = "0.4"
 base64 = "0.22"
 dotenvy = "0.15"
 chrono = "0.4"
+termimad = "0.30"
+syntect = "5.2"
 
 # Web server dependencies
 axum = "0.7"

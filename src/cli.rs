@@ -158,6 +158,9 @@ pub enum Commands {
         #[arg(long, default_value = "0", help = "Device index (GPU ordinal) when using metal/cuda")]
         device_index: usize,
     },
+
+    #[command(about = "Show current configuration settings")]
+    Config,
 }
 
 #[cfg(test)]

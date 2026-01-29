@@ -68,12 +68,14 @@ pub async fn search_models(
         .await
         .map_err(|e| InfluenceError::DownloadError(format!("Failed to parse search results: {}", e)))?;
 
+    let formatter = crate::output::OutputFormatter::new();
+
     if search_result.is_empty() {
-        println!("No models found matching '{}'", query);
+        formatter.print_warning(&format!("No models found matching '{}'", query));
         return Ok(());
     }
 
-    println!("\nFound {} models:\n", search_result.len());
+    formatter.print_header(&format!("Found {} models", search_result.len()));
 
     for (index, model) in search_result.iter().enumerate() {
         let model_id = model.id.as_ref()
@@ -81,31 +83,15 @@ pub async fn search_models(
             .map(|s| s.as_str())
             .unwrap_or("unknown");
 
-        println!("{}. {}", index + 1, model_id);
-
-        if let Some(author) = &model.author_name {
-            println!("   Author: {}", author);
-        }
-
-        if let Some(pipeline) = &model.pipeline_tag {
-            println!("   Task: {}", pipeline);
-        }
-
-        if let Some(downloads) = model.downloads {
-            println!("   Downloads: {}", downloads);
-        }
-
-        if let Some(likes) = model.likes {
-            println!("   Likes: {}", likes);
-        }
-
-        if let Some(library) = &model.library_name {
-            println!("   Library: {}", library);
-        }
-
-        // Show download command
-        println!("   Download: cargo run -- download --model {}", model_id);
-        println!();
+        formatter.print_search_result(
+            index + 1,
+            model_id,
+            model.author_name.as_deref(),
+            model.pipeline_tag.as_deref(),
+            model.downloads,
+            model.likes,
+            model.library_name.as_deref(),
+        );
     }
 
     Ok(())

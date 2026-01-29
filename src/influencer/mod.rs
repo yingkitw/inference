@@ -144,25 +144,14 @@ fn handle_command(
         return Ok(false); // Not a command
     }
 
+    let formatter = crate::output::OutputFormatter::new();
+    
     match cmd {
         "/help" => {
-            println!("\n╭─────────────────────────────────────────────────────────────╮");
-            println!("│  Chat Commands                                                │");
-            println!("╰─────────────────────────────────────────────────────────────╯");
-            println!();
-            println!("  /help              Show this help message");
-            println!("  /clear             Clear conversation history");
-            println!("  /history           Show conversation history");
-            println!("  /save <filename>   Save conversation to file");
-            println!("  /load <filename>   Load conversation from file");
-            println!("  /set <param> <val> Change parameters (temperature, top_p)");
-            println!("  /quit or /exit     Exit chat mode");
-            println!();
-            println!("  Example: /set temperature 0.8");
-            println!();
+            formatter.print_help_commands();
         }
         "/clear" => {
-            println!("✓ Conversation history cleared");
+            formatter.print_success("Conversation history cleared");
             if let Some(system) = &session.system_prompt {
                 session.messages = vec![ChatMessage {
                     role: "system".to_string(),
@@ -174,10 +163,7 @@ fn handle_command(
             }
         }
         "/history" => {
-            println!("\n╭─────────────────────────────────────────────────────────────╮");
-            println!("│  Conversation History ({} messages)                         │", session.messages.len());
-            println!("╰─────────────────────────────────────────────────────────────╯");
-            println!();
+            formatter.print_section("Conversation History", &format!("{} messages", session.messages.len()));
             for (idx, msg) in session.messages.iter().enumerate() {
                 let role_icon = if msg.role == "system" {
                     "🔧"
@@ -186,32 +172,31 @@ fn handle_command(
                 } else {
                     "🤖"
                 };
-                println!("  [{}] {} [{}]: {}", idx + 1, role_icon, msg.role, msg.content);
+                formatter.print_markdown(&format!("{}. {} **[{}]:** {}\n", idx + 1, role_icon, msg.role, msg.content));
             }
-            println!();
         }
         "/save" => {
             let filename = parts.get(1).unwrap_or(&"");
             if filename.is_empty() {
-                println!("❌ Usage: /save <filename>");
-                println!("   Example: /save my_chat.json");
+                formatter.print_error("Usage: /save <filename>");
+                formatter.print_markdown("**Example:** `/save my_chat.json`\n");
                 return Ok(true);
             }
             let path = PathBuf::from(filename);
             session.save(&path)?;
-            println!("✓ Conversation saved to: {}", filename);
+            formatter.print_success(&format!("Conversation saved to: {}", filename));
         }
         "/load" => {
             let filename = parts.get(1).unwrap_or(&"");
             if filename.is_empty() {
-                println!("❌ Usage: /load <filename>");
-                println!("   Example: /load my_chat.json");
+                formatter.print_error("Usage: /load <filename>");
+                formatter.print_markdown("**Example:** `/load my_chat.json`\n");
                 return Ok(true);
             }
             let path = PathBuf::from(filename);
             let loaded_session = ChatSession::load(&path)?;
-            println!("✓ Loaded conversation from: {}", filename);
-            println!("  Messages: {}", loaded_session.messages.len());
+            formatter.print_success(&format!("Loaded conversation from: {}", filename));
+            formatter.print_info(&format!("Messages: {}", loaded_session.messages.len()));
             *session = loaded_session;
         }
         "/set" => {
@@ -219,9 +204,9 @@ fn handle_command(
             let value = parts.get(2).map(|s| s.trim()).unwrap_or("");
 
             if param.is_empty() || value.is_empty() {
-                println!("❌ Usage: /set <parameter> <value>");
-                println!("   Available parameters: temperature, top_p, top_k, repeat_penalty, max_tokens");
-                println!("   Example: /set temperature 0.8");
+                formatter.print_error("Usage: /set <parameter> <value>");
+                formatter.print_markdown("**Available parameters:** temperature, top_p, top_k, repeat_penalty, max_tokens\n");
+                formatter.print_markdown("**Example:** `/set temperature 0.8`\n");
                 return Ok(true);
             }
 
@@ -230,47 +215,47 @@ fn handle_command(
                     let new_temp = value.parse::<f32>()
                         .map_err(|_| InfluenceError::InvalidConfig("Invalid temperature value".to_string()))?;
                     if !(0.0..=2.0).contains(&new_temp) {
-                        println!("❌ Temperature must be between 0.0 and 2.0");
+                        formatter.print_error("Temperature must be between 0.0 and 2.0");
                         return Ok(true);
                     }
                     session.temperature = new_temp;
-                    println!("✓ Temperature set to {}", new_temp);
+                    formatter.print_success(&format!("Temperature set to {}", new_temp));
                 }
                 "top_p" => {
                     let new_top_p = value.parse::<f32>()
                         .map_err(|_| InfluenceError::InvalidConfig("Invalid top_p value".to_string()))?;
                     if !(0.0..=1.0).contains(&new_top_p) {
-                        println!("❌ Top-p must be between 0.0 and 1.0");
+                        formatter.print_error("Top-p must be between 0.0 and 1.0");
                         return Ok(true);
                     }
                     session.top_p = new_top_p;
-                    println!("✓ Top-p set to {}", new_top_p);
+                    formatter.print_success(&format!("Top-p set to {}", new_top_p));
                 }
                 "top_k" => {
                     let new_top_k = value.parse::<usize>()
                         .map_err(|_| InfluenceError::InvalidConfig("Invalid top_k value".to_string()))?;
                     session.top_k = Some(new_top_k);
-                    println!("✓ Top-k set to {}", new_top_k);
+                    formatter.print_success(&format!("Top-k set to {}", new_top_k));
                 }
                 "repeat_penalty" => {
                     let new_rp = value.parse::<f32>()
                         .map_err(|_| InfluenceError::InvalidConfig("Invalid repeat_penalty value".to_string()))?;
                     if !(0.0..=2.0).contains(&new_rp) {
-                        println!("❌ Repeat penalty must be between 0.0 and 2.0");
+                        formatter.print_error("Repeat penalty must be between 0.0 and 2.0");
                         return Ok(true);
                     }
                     session.repeat_penalty = new_rp;
-                    println!("✓ Repeat penalty set to {}", new_rp);
+                    formatter.print_success(&format!("Repeat penalty set to {}", new_rp));
                 }
                 "max_tokens" => {
                     let new_max = value.parse::<usize>()
                         .map_err(|_| InfluenceError::InvalidConfig("Invalid max_tokens value".to_string()))?;
                     session.max_tokens = new_max;
-                    println!("✓ Max tokens set to {}", new_max);
+                    formatter.print_success(&format!("Max tokens set to {}", new_max));
                 }
                 _ => {
-                    println!("❌ Unknown parameter: {}", param);
-                    println!("   Available: temperature, top_p, top_k, repeat_penalty, max_tokens");
+                    formatter.print_error(&format!("Unknown parameter: {}", param));
+                    formatter.print_markdown("**Available:** temperature, top_p, top_k, repeat_penalty, max_tokens\n");
                 }
             }
         }
@@ -278,8 +263,8 @@ fn handle_command(
             return Err(InfluenceError::LocalModelError("Exiting chat".to_string()));
         }
         _ => {
-            println!("❌ Unknown command: {}", cmd);
-            println!("   Type /help for available commands");
+            formatter.print_error(&format!("Unknown command: {}", cmd));
+            formatter.print_markdown("Type `/help` for available commands\n");
         }
     }
 
@@ -333,7 +318,8 @@ pub async fn generate(
     };
 
     let mut local_model = LocalModel::load(config).await?;
-    println!("\n--- Local Generation ---");
+    let formatter = crate::output::OutputFormatter::new();
+    formatter.print_header("Local Generation");
 
     let effective_prompt = match system {
         Some(system_prompt) if !system_prompt.trim().is_empty() => {
@@ -351,9 +337,12 @@ pub async fn generate(
 
     // Generate with early stopping if model starts a new turn
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
     let should_stop = AtomicBool::new(false);
+    let output_buffer = Arc::new(Mutex::new(String::new()));
+    let buffer_clone = output_buffer.clone();
 
-    local_model.generate_stream_with(&effective_prompt, max_tokens, temperature, |piece| {
+    local_model.generate_stream_with(&effective_prompt, max_tokens, temperature, move |piece| {
         if should_stop.load(Ordering::Relaxed) {
             return Ok(());
         }
@@ -364,11 +353,27 @@ pub async fn generate(
             return Ok(());
         }
 
+        if let Ok(mut buffer) = buffer_clone.lock() {
+            buffer.push_str(&piece);
+        }
         print!("{}", piece);
         io::stdout().flush().map_err(|e| InfluenceError::LocalModelError(format!("Failed to flush stdout: {}", e)))
     }).await?;
 
-    println!("\n--- End ---\n");
+    println!("\n");
+    
+    // Render the complete output with markdown formatting
+    if let Ok(buffer) = output_buffer.lock() {
+        let output = buffer.as_str();
+        
+        // Check if output contains code blocks and render them with syntax highlighting
+        if output.contains("```") {
+            println!("\n--- Formatted Output ---\n");
+            formatter.print_markdown(output);
+        }
+    }
+    
+    formatter.print_success("Generation complete");
 
     Ok(())
 }
@@ -424,27 +429,20 @@ pub async fn chat(
     };
 
     let mut local_model = LocalModel::load(config).await?;
+    let formatter = crate::output::OutputFormatter::new();
 
-    println!("╭─────────────────────────────────────────────────────────────╮");
-    println!("│  Interactive Chat Mode                                        │");
-    println!("│  Type your messages and press Enter to send                  │");
-    println!("│  Type /help for available commands                           │");
-    println!("│  Type /quit or /exit to exit                                  │");
-    println!("╰─────────────────────────────────────────────────────────────╯");
-    println!();
+    formatter.print_chat_header();
 
     // Initialize or load chat session
     let mut session = if let Some(session_path) = session_file {
         match ChatSession::load(session_path) {
             Ok(loaded_session) => {
-                println!("✓ Loaded session from: {}", session_path.display());
-                println!("  Messages: {}", loaded_session.messages.len());
-                println!();
+                formatter.print_success(&format!("Loaded session from: {}", session_path.display()));
+                formatter.print_info(&format!("Messages: {}", loaded_session.messages.len()));
                 loaded_session
             }
             Err(e) => {
-                println!("⚠ Failed to load session: {}. Starting new session.", e);
-                println!();
+                formatter.print_warning(&format!("Failed to load session: {}. Starting new session.", e));
                 ChatSession::new(
                     model_path,
                     system,
@@ -482,12 +480,11 @@ pub async fn chat(
 
         // Check for exit commands (also handled by /quit, but keeping for consistency)
         if user_input.eq_ignore_ascii_case("quit") || user_input.eq_ignore_ascii_case("exit") {
-            // Auto-save if requested
             if let Some(save_path) = save_on_exit {
                 session.save(save_path)?;
-                println!("✓ Session saved to: {}", save_path.display());
+                formatter.print_success(&format!("Session saved to: {}", save_path.display()));
             }
-            println!("Goodbye!");
+            formatter.print_info("Goodbye!");
             break;
         }
 
@@ -506,15 +503,14 @@ pub async fn chat(
                 }
                 Err(e) => {
                     if e.to_string() == "Exiting chat" {
-                        // Auto-save if requested
                         if let Some(save_path) = save_on_exit {
                             session.save(save_path)?;
-                            println!("✓ Session saved to: {}", save_path.display());
+                            formatter.print_success(&format!("Session saved to: {}", save_path.display()));
                         }
-                        println!("Goodbye!");
+                        formatter.print_info("Goodbye!");
                         break;
                     }
-                    println!("❌ Error: {}", e);
+                    formatter.print_error(&format!("Error: {}", e));
                     continue;
                 }
             }

@@ -162,32 +162,21 @@ fn analyze_model_directory(path: &Path) -> Result<Option<LocalModelInfo>> {
 }
 
 /// Display model information in a formatted table
-pub fn display_models(models: &[LocalModelInfo]) {
+pub fn display_models(models: &[LocalModelInfo], formatter: &crate::output::OutputFormatter) {
     if models.is_empty() {
-        println!("No models found in the models directory.");
-        println!("\nTo download a model, use:");
-        println!("  influence download -m <model-name>");
-        println!("\nExample:");
-        println!("  influence download -m TinyLlama/TinyLlama-1.1B-Chat-v1.0");
+        formatter.print_warning("No models found in the models directory.");
+        formatter.print_markdown("\n**To download a model:**\n\n```bash\ninfluence download -m <model-name>\n```\n\n**Example:**\n\n```bash\ninfluence download -m TinyLlama/TinyLlama-1.1B-Chat-v1.0\n```\n");
         return;
     }
 
-    println!("\n╔══════════════════════════════════════════════════════════════════════════════╗");
-    println!("║  Local Models                                                              ║");
-    println!("╚══════════════════════════════════════════════════════════════════════════════╝\n");
+    formatter.print_header("Local Models");
 
-    for (idx, model) in models.iter().enumerate() {
-        println!("{} {}", idx + 1, model.name);
-        println!("   Path: {}", model.path.display());
-
+    for model in models.iter() {
         let format_str = match &model.format {
             ModelFormat::SafeTensors => "SafeTensors".to_string(),
             ModelFormat::GGUF { quantization } => format!("GGUF ({})", quantization),
             ModelFormat::Unknown => "Unknown".to_string(),
         };
-
-        println!("   Format: {}", format_str);
-        println!("   Architecture: {}", model.architecture);
 
         let size_mb = model.size_bytes / (1024 * 1024);
         let size_gb = size_mb / 1024;
@@ -198,11 +187,17 @@ pub fn display_models(models: &[LocalModelInfo]) {
             format!("{} MB", size_mb)
         };
 
-        println!("   Size: {} ({} files)", size_str, model.file_count);
-        println!();
+        formatter.print_model_info(
+            &model.name,
+            &model.path.display().to_string(),
+            &format_str,
+            &model.architecture,
+            &size_str,
+            model.file_count,
+        );
     }
 
-    println!("Total: {} model(s)", models.len());
+    formatter.print_info(&format!("Total: {} model(s)", models.len()));
 }
 
 #[cfg(test)]

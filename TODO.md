@@ -98,6 +98,8 @@
 - [x] Add environment variable configuration (.env file support)
 - [x] Add HTTP server for serving API
 - [x] Add model validation after download
+- [x] Improve CLI output UX with markdown rendering and syntax highlighting
+- [x] Add config command to display configuration settings in formatted table
 
 ### Web API
 - [ ] Document REST/SSE endpoints and example curl commands
