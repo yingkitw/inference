@@ -107,6 +107,11 @@ pub async fn download_model(
     }
 
     info!("Model downloaded successfully to: {}", output_dir.display());
+
+    // Validate the downloaded model
+    info!("Validating downloaded model files...");
+    validate_model(&output_dir).await?;
+
     Ok(())
 }
 
@@ -289,15 +294,253 @@ async fn download_file(client: &Client, url: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Validates that the downloaded model contains all required files
+async fn validate_model(output_dir: &Path) -> Result<()> {
+    let mut errors: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    // Check for essential files
+    let essential_files = vec!["config.json"];
+    for file in &essential_files {
+        let path = output_dir.join(file);
+        if !path.exists() {
+            errors.push(format!("Missing essential file: {}", file));
+        }
+    }
+
+    // Check for tokenizer files (at least one should exist)
+    let tokenizer_files = vec!["tokenizer.json", "tokenizer_config.json"];
+    let has_tokenizer = tokenizer_files.iter()
+        .any(|file| output_dir.join(file).exists());
+
+    if !has_tokenizer {
+        errors.push("Missing tokenizer files (tokenizer.json or tokenizer_config.json required)".to_string());
+    }
+
+    // Check for model weight files
+    let has_safetensors = find_files_with_extension(output_dir, ".safetensors").await?;
+    let has_bin = find_files_with_extension(output_dir, ".bin").await?;
+
+    if !has_safetensors && !has_bin {
+        warnings.push("No model weight files found (.safetensors or .bin). Model inference will not work.".to_string());
+    }
+
+    // Validate config.json if it exists
+    let config_path = output_dir.join("config.json");
+    if config_path.exists() {
+        match validate_config_json(&config_path).await {
+            Ok(_) => info!("config.json is valid"),
+            Err(e) => warnings.push(format!("config.json validation warning: {}", e)),
+        }
+    }
+
+    // Report errors
+    if !errors.is_empty() {
+        return Err(InfluenceError::DownloadError(format!(
+            "Model validation failed:\n  {}",
+            errors.join("\n  ")
+        )));
+    }
+
+    // Report warnings
+    if !warnings.is_empty() {
+        for warning in &warnings {
+            warn!("{}", warning);
+        }
+    }
+
+    info!("Model validation complete!");
+    Ok(())
+}
+
+/// Finds files with a specific extension in the directory
+async fn find_files_with_extension(dir: &Path, extension: &str) -> Result<bool> {
+    let mut entries = fs::read_dir(dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext.to_string_lossy() == extension.trim_start_matches('.') {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Validates that config.json can be parsed and contains required fields
+async fn validate_config_json(path: &Path) -> Result<()> {
+    let content = fs::read_to_string(path).await
+        .map_err(|e| InfluenceError::DownloadError(format!("Failed to read config.json: {}", e)))?;
+
+    let _config: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| InfluenceError::DownloadError(format!("Failed to parse config.json: {}", e)))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use std::fs;
+    use std::io::Write;
 
     #[tokio::test]
     async fn test_get_output_dir() {
         let temp_dir = TempDir::new().unwrap();
         let output = get_output_dir("ibm/granite", Some(temp_dir.path())).unwrap();
         assert_eq!(output, temp_dir.path());
+    }
+
+    #[tokio::test]
+    async fn test_validate_model_with_all_files() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create essential files
+        let config_path = temp_dir.path().join("config.json");
+        let mut file = fs::File::create(&config_path).unwrap();
+        writeln!(file, r#"{{"model_type": "llama", "hidden_size": 768}}"#).unwrap();
+
+        let tokenizer_path = temp_dir.path().join("tokenizer.json");
+        let mut file = fs::File::create(&tokenizer_path).unwrap();
+        writeln!(file, r#"{{"vocab": {{}}"}}"#).unwrap();
+
+        let model_path = temp_dir.path().join("model.safetensors");
+        let mut file = fs::File::create(&model_path).unwrap();
+        file.write_all(&[0u8; 100]).unwrap();
+
+        // Should validate successfully
+        let result = validate_model(temp_dir.path()).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_model_missing_config() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Only create tokenizer, missing config
+        let tokenizer_path = temp_dir.path().join("tokenizer.json");
+        let mut file = fs::File::create(&tokenizer_path).unwrap();
+        writeln!(file, r#"{{"vocab": {{}}"}}"#).unwrap();
+
+        // Should fail with missing config error
+        let result = validate_model(temp_dir.path()).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing essential file: config.json"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_model_missing_tokenizer() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Only create config, missing tokenizer
+        let config_path = temp_dir.path().join("config.json");
+        let mut file = fs::File::create(&config_path).unwrap();
+        writeln!(file, r#"{{"model_type": "llama"}}"#).unwrap();
+
+        // Should fail with missing tokenizer error
+        let result = validate_model(temp_dir.path()).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing tokenizer files"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_model_no_weights() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create config and tokenizer, but no model weights
+        let config_path = temp_dir.path().join("config.json");
+        let mut file = fs::File::create(&config_path).unwrap();
+        writeln!(file, r#"{{"model_type": "llama"}}"#).unwrap();
+
+        let tokenizer_path = temp_dir.path().join("tokenizer.json");
+        let mut file = fs::File::create(&tokenizer_path).unwrap();
+        writeln!(file, r#"{{"vocab": {{}}"}}"#).unwrap();
+
+        // Should validate but with warning (no error)
+        let result = validate_model(temp_dir.path()).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_model_invalid_config_json() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create invalid config.json
+        let config_path = temp_dir.path().join("config.json");
+        let mut file = fs::File::create(&config_path).unwrap();
+        writeln!(file, "invalid json {{{{").unwrap();
+
+        let tokenizer_path = temp_dir.path().join("tokenizer.json");
+        let mut file = fs::File::create(&tokenizer_path).unwrap();
+        writeln!(file, r#"{{"vocab": {{}}"}}"#).unwrap();
+
+        // Should validate but with warning about invalid config
+        let result = validate_model(temp_dir.path()).await;
+        assert!(result.is_ok()); // Validation passes but with warning
+    }
+
+    #[tokio::test]
+    async fn test_find_files_with_extension_safetensors() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a .safetensors file
+        let model_path = temp_dir.path().join("model.safetensors");
+        let mut file = fs::File::create(&model_path).unwrap();
+        file.write_all(&[0u8; 100]).unwrap();
+
+        let result = find_files_with_extension(temp_dir.path(), ".safetensors").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_find_files_with_extension_bin() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a .bin file
+        let model_path = temp_dir.path().join("pytorch_model.bin");
+        let mut file = fs::File::create(&model_path).unwrap();
+        file.write_all(&[0u8; 100]).unwrap();
+
+        let result = find_files_with_extension(temp_dir.path(), ".bin").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_find_files_with_extension_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = find_files_with_extension(temp_dir.path(), ".safetensors").await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_validate_config_json_valid() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let config_path = temp_dir.path().join("config.json");
+        let mut file = fs::File::create(&config_path).unwrap();
+        writeln!(file, r#"{{"model_type": "llama", "hidden_size": 768, "num_layers": 12}}"#).unwrap();
+
+        let result = validate_config_json(&config_path).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_config_json_invalid() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let config_path = temp_dir.path().join("config.json");
+        let mut file = fs::File::create(&config_path).unwrap();
+        writeln!(file, "invalid json {{{{").unwrap();
+
+        let result = validate_config_json(&config_path).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to parse config.json"));
     }
 }

@@ -28,16 +28,32 @@ async fn main() -> anyhow::Result<()> {
         Commands::Search { query, limit, author } => {
             search::search_models(&query, limit, author.as_deref(), None).await?;
         }
-        Commands::Serve { model_path, port } => {
-            influencer::serve(model_path.as_deref(), port).await?;
+        Commands::Serve { model_path, port, device, device_index } => {
+            influencer::serve(model_path.as_deref(), port, &device, device_index).await?;
         }
-        Commands::Generate { prompt, system, model_path, max_tokens, temperature, device, device_index } => {
+        Commands::Generate { prompt, system, model_path, max_tokens, temperature, top_p, top_k, repeat_penalty, device, device_index } => {
             influencer::generate(
                 &prompt,
                 system.as_deref(),
                 model_path.as_deref(),
                 max_tokens,
                 temperature,
+                top_p,
+                top_k,
+                repeat_penalty,
+                &device,
+                device_index,
+            ).await?;
+        }
+        Commands::Chat { model_path, system, max_tokens, temperature, top_p, top_k, repeat_penalty, device, device_index } => {
+            influencer::chat(
+                &model_path,
+                system.as_deref(),
+                max_tokens,
+                temperature,
+                top_p,
+                top_k,
+                repeat_penalty,
                 &device,
                 device_index,
             ).await?;

@@ -60,7 +60,7 @@ Influence is a Rust CLI application for downloading models from HuggingFace mirr
 
 ## API Design
 
-### Commands
+### CLI Commands
 
 #### `search`
 ```bash
@@ -137,6 +137,14 @@ Generate text using local LLM inference.
 5. Tokenize prompt
 6. Generate tokens with temperature sampling
 7. Stream output to stdout
+
+### `serve`
+
+Serve the local model over HTTP.
+
+**Endpoints:**
+- `POST /v1/generate` - returns JSON `{ "text": "..." }`
+- `POST /v1/generate_stream` - returns SSE events `event: token` with token chunks in `data:`
 
 **Error Conditions:**
 - Model path not provided

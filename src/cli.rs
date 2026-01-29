@@ -36,13 +36,19 @@ pub enum Commands {
         author: Option<String>,
     },
 
-    #[command(about = "Serve LLM as influencer")]
+    #[command(about = "Serve local LLM over a web API")]
     Serve {
         #[arg(short, long, help = "Path to model directory")]
         model_path: Option<PathBuf>,
 
         #[arg(short, long, default_value = "8080", help = "Port to serve on")]
         port: u16,
+
+        #[arg(long, default_value = "auto", help = "Compute device: auto|cpu|metal|cuda")]
+        device: String,
+
+        #[arg(long, default_value = "0", help = "Device index (GPU ordinal) when using metal/cuda")]
+        device_index: usize,
     },
 
     #[command(about = "Generate text using the LLM")]
@@ -61,6 +67,45 @@ pub enum Commands {
 
         #[arg(long, default_value = "0.7", help = "Temperature for generation")]
         temperature: f32,
+
+        #[arg(long, default_value = "0.9", help = "Top-p (nucleus) sampling threshold")]
+        top_p: f32,
+
+        #[arg(long, help = "Top-k sampling limit (default: disabled)")]
+        top_k: Option<usize>,
+
+        #[arg(long, default_value = "1.1", help = "Repetition penalty")]
+        repeat_penalty: f32,
+
+        #[arg(long, default_value = "auto", help = "Compute device: auto|cpu|metal|cuda")]
+        device: String,
+
+        #[arg(long, default_value = "0", help = "Device index (GPU ordinal) when using metal/cuda")]
+        device_index: usize,
+    },
+
+    #[command(about = "Interactive chat mode with conversation history")]
+    Chat {
+        #[arg(short, long, help = "Path to model directory")]
+        model_path: PathBuf,
+
+        #[arg(long, help = "System prompt to set conversation context")]
+        system: Option<String>,
+
+        #[arg(long, default_value = "512", help = "Maximum tokens to generate per response")]
+        max_tokens: usize,
+
+        #[arg(long, default_value = "0.7", help = "Temperature for generation")]
+        temperature: f32,
+
+        #[arg(long, default_value = "0.9", help = "Top-p (nucleus) sampling threshold")]
+        top_p: f32,
+
+        #[arg(long, help = "Top-k sampling limit (default: disabled)")]
+        top_k: Option<usize>,
+
+        #[arg(long, default_value = "1.1", help = "Repetition penalty")]
+        repeat_penalty: f32,
 
         #[arg(long, default_value = "auto", help = "Compute device: auto|cpu|metal|cuda")]
         device: String,
@@ -137,6 +182,12 @@ mod tests {
             "100",
             "--temperature",
             "0.5",
+            "--top-p",
+            "0.8",
+            "--top-k",
+            "50",
+            "--repeat-penalty",
+            "1.2",
             "--device",
             "cpu",
             "--device-index",
@@ -147,12 +198,15 @@ mod tests {
         assert!(cli.is_ok());
         let cli = cli.unwrap();
         match cli.command {
-            Commands::Generate { prompt, system, model_path, max_tokens, temperature, device, device_index } => {
+            Commands::Generate { prompt, system, model_path, max_tokens, temperature, top_p, top_k, repeat_penalty, device, device_index } => {
                 assert_eq!(prompt, "Hello world");
                 assert_eq!(system, Some("You are a helpful assistant.".to_string()));
                 assert_eq!(model_path, Some(PathBuf::from("/models")));
                 assert_eq!(max_tokens, 100);
                 assert_eq!(temperature, 0.5);
+                assert_eq!(top_p, 0.8);
+                assert_eq!(top_k, Some(50));
+                assert_eq!(repeat_penalty, 1.2);
                 assert_eq!(device, "cpu");
                 assert_eq!(device_index, 1);
             }
@@ -180,30 +234,45 @@ mod tests {
 
     #[test]
     fn test_serve_command_parsing() {
-        let args = vec!["influence", "serve", "--model-path", "/models", "--port", "9000"];
+        let args = vec![
+            "influence",
+            "serve",
+            "--model-path",
+            "/models",
+            "--port",
+            "9000",
+            "--device",
+            "cpu",
+            "--device-index",
+            "1",
+        ];
         let cli = Cli::try_parse_from(args);
 
         assert!(cli.is_ok());
         let cli = cli.unwrap();
         match cli.command {
-            Commands::Serve { model_path, port } => {
+            Commands::Serve { model_path, port, device, device_index } => {
                 assert_eq!(model_path, Some(PathBuf::from("/models")));
                 assert_eq!(port, 9000);
+                assert_eq!(device, "cpu");
+                assert_eq!(device_index, 1);
             }
             _ => panic!("Expected Serve command"),
         }
     }
 
     #[test]
-    fn test_serve_default_port() {
+    fn test_serve_default_values() {
         let args = vec!["influence", "serve"];
         let cli = Cli::try_parse_from(args);
 
         assert!(cli.is_ok());
         let cli = cli.unwrap();
         match cli.command {
-            Commands::Serve { port, .. } => {
+            Commands::Serve { port, device, device_index, .. } => {
                 assert_eq!(port, 8080);
+                assert_eq!(device, "auto");
+                assert_eq!(device_index, 0);
             }
             _ => panic!("Expected Serve command"),
         }
@@ -215,5 +284,121 @@ mod tests {
         let cli = Cli::try_parse_from(args);
 
         assert!(cli.is_err());
+    }
+
+    #[test]
+    fn test_chat_command_parsing() {
+        let args = vec![
+            "influence",
+            "chat",
+            "--model-path",
+            "/models",
+            "--system",
+            "You are a helpful assistant.",
+            "--max-tokens",
+            "256",
+            "--temperature",
+            "0.8",
+            "--top-p",
+            "0.85",
+            "--top-k",
+            "40",
+            "--repeat-penalty",
+            "1.15",
+            "--device",
+            "metal",
+            "--device-index",
+            "1",
+        ];
+        let cli = Cli::try_parse_from(args);
+
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Chat { model_path, system, max_tokens, temperature, top_p, top_k, repeat_penalty, device, device_index } => {
+                assert_eq!(model_path, PathBuf::from("/models"));
+                assert_eq!(system, Some("You are a helpful assistant.".to_string()));
+                assert_eq!(max_tokens, 256);
+                assert_eq!(temperature, 0.8);
+                assert_eq!(top_p, 0.85);
+                assert_eq!(top_k, Some(40));
+                assert_eq!(repeat_penalty, 1.15);
+                assert_eq!(device, "metal");
+                assert_eq!(device_index, 1);
+            }
+            _ => panic!("Expected Chat command"),
+        }
+    }
+
+    #[test]
+    fn test_chat_default_values() {
+        let args = vec![
+            "influence",
+            "chat",
+            "--model-path",
+            "/models",
+        ];
+        let cli = Cli::try_parse_from(args);
+
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Chat { max_tokens, temperature, top_p, top_k, repeat_penalty, device, device_index, .. } => {
+                assert_eq!(max_tokens, 512);
+                assert_eq!(temperature, 0.7);
+                assert_eq!(top_p, 0.9);
+                assert_eq!(top_k, None);
+                assert_eq!(repeat_penalty, 1.1);
+                assert_eq!(device, "auto");
+                assert_eq!(device_index, 0);
+            }
+            _ => panic!("Expected Chat command"),
+        }
+    }
+
+    #[test]
+    fn test_chat_requires_model_path() {
+        let args = vec![
+            "influence",
+            "chat",
+            "--temperature",
+            "0.5",
+        ];
+        let cli = Cli::try_parse_from(args);
+
+        // Should fail because model-path is required
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn test_generate_with_all_sampling_params() {
+        let args = vec![
+            "influence",
+            "generate",
+            "Hello",
+            "--model-path",
+            "/models",
+            "--temperature",
+            "0.6",
+            "--top-p",
+            "0.92",
+            "--top-k",
+            "50",
+            "--repeat-penalty",
+            "1.05",
+        ];
+        let cli = Cli::try_parse_from(args);
+
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Generate { temperature, top_p, top_k, repeat_penalty, .. } => {
+                assert_eq!(temperature, 0.6);
+                assert_eq!(top_p, 0.92);
+                assert_eq!(top_k, Some(50));
+                assert_eq!(repeat_penalty, 1.05);
+            }
+            _ => panic!("Expected Generate command"),
+        }
     }
 }

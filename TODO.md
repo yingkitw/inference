@@ -75,13 +75,17 @@
 - [ ] Optimize tokenization performance
 
 ### Features
-- [ ] Add chat mode with conversation history
+- [x] Add chat mode with conversation history
 - [x] Add system prompt support
-- [ ] Add top-p and top-k sampling options
-- [ ] Add repetition penalty control
+- [x] Add top-p and top-k sampling options
+- [x] Add repetition penalty control
 - [ ] Add configuration file support
-- [ ] Add HTTP server for serving API
-- [ ] Add model validation after download
+- [x] Add HTTP server for serving API
+- [x] Add model validation after download
+
+### Web API
+- [ ] Document REST/SSE endpoints and example curl commands
+- [ ] Add integration tests for /v1/generate and /v1/generate_stream
 
 ### Developer Experience
 - [ ] Add integration tests with mock server
@@ -106,8 +110,6 @@
 - Models requiring specialized implementations
 
 ### Current Limitations
-- CPU inference only (GPU support planned)
-- No conversation history/memory
+- CPU inference only (GPU support via Metal/CUDA available)
 - No batch generation
-- Llama-architecture only for inference
-- Argmax sampling only (no nucleus sampling)
+- Llama-architecture only for inference (Mistral partially implemented)
