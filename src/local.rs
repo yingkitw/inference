@@ -391,12 +391,29 @@ impl LocalModel {
             generated.push(next);
         }
 
-        // Decode generated tokens without skipping special tokens to preserve spacing
-        let decoded = self.tokenizer.decode(&generated, false)
+        // Try both skip_special_tokens settings
+        let decoded_no_skip = self.tokenizer.decode(&generated, false)
+            .map_err(|e| InfluenceError::LocalModelError(format!("Decode failed: {}", e)))?;
+        let decoded_skip = self.tokenizer.decode(&generated, true)
             .map_err(|e| InfluenceError::LocalModelError(format!("Decode failed: {}", e)))?;
         
-        // Replace SentencePiece underscore (▁) with regular spaces
-        Ok(decoded.replace('▁', " "))
+        // Debug output to stderr
+        eprintln!("\n=== DEBUG TOKENIZER OUTPUT ===");
+        eprintln!("Generated token count: {}", generated.len());
+        eprintln!("First 5 tokens: {:?}", &generated[..generated.len().min(5)]);
+        eprintln!("Decoded (skip=false, first 50 chars): {:?}", &decoded_no_skip.chars().take(50).collect::<String>());
+        eprintln!("Decoded (skip=true, first 50 chars): {:?}", &decoded_skip.chars().take(50).collect::<String>());
+        eprintln!("Contains ▁ (U+2581): {}", decoded_no_skip.contains('\u{2581}'));
+        eprintln!("Byte lengths: no_skip={}, skip={}", decoded_no_skip.len(), decoded_skip.len());
+        
+        // Check if they're the same
+        if decoded_no_skip == decoded_skip {
+            eprintln!("WARNING: Both decode methods produce identical output!");
+        }
+        eprintln!("==============================\n");
+        
+        // The tokenizer should handle spacing automatically with skip_special_tokens=true
+        Ok(decoded_skip)
     }
 
     fn get_eos_token(&self) -> Option<u32> {
