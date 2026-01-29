@@ -1,12 +1,11 @@
 use crate::error::{InfluenceError, Result};
-use anyhow::Context;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use std::path::{Path, PathBuf};
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
-use tracing::{info, warn};
+use tracing::info;
 
 const DEFAULT_MIRROR: &str = "https://hf-mirror.com";
 
@@ -39,7 +38,7 @@ pub async fn download_model(
 
         info!("Downloading: {}", file);
         download_file(&client, &url, &file_path).await
-            .with_context(|| format!("Failed to download {}", file))?;
+            .map_err(|e| InfluenceError::DownloadError(format!("Failed to download {}: {}", file, e)))?;
     }
 
     info!("Model downloaded successfully to: {}", output_dir.display());

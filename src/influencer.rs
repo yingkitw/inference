@@ -1,5 +1,4 @@
 use crate::error::{InfluenceError, Result};
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tracing::{info, error, debug};
@@ -221,7 +220,7 @@ impl LlmService for WatsonXService {
     }
 }
 
-fn load_config(model_path: Option<&Path>) -> Result<InfluencerConfig> {
+fn load_config(_model_path: Option<&Path>) -> Result<InfluencerConfig> {
     let api_key = std::env::var("WATSONX_API_KEY")
         .map_err(|_| InfluenceError::InvalidConfig("WATSONX_API_KEY not set".into()))?;
     
@@ -294,8 +293,10 @@ mod tests {
 
     #[test]
     fn test_load_config_missing_env() {
-        std::env::remove_var("WATSONX_API_KEY");
-        std::env::remove_var("WATSONX_PROJECT_ID");
+        unsafe {
+            std::env::remove_var("WATSONX_API_KEY");
+            std::env::remove_var("WATSONX_PROJECT_ID");
+        }
         
         let result = load_config(None);
         assert!(result.is_err());
