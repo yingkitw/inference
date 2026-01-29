@@ -343,11 +343,13 @@ impl LocalModel {
         let mut generated = Vec::new();
         let model = self.model.as_ref().unwrap();
         let eos_token = self.get_eos_token();
-        let cache = self.cache.as_mut().unwrap();
 
         // Process the prompt to fill the cache
         let prompt_tensor = Tensor::new(&input_ids[..], &self.device)?.unsqueeze(0)?;
-        let logits = model.forward(&prompt_tensor, 0, cache)?;
+        let logits = {
+            let cache = self.cache.as_mut().unwrap();
+            model.forward(&prompt_tensor, 0, cache)?
+        };
         
         // logits shape: [batch=1, vocab_size] (model returns logits for last token only)
         let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
@@ -373,7 +375,10 @@ impl LocalModel {
             }
             
             let tensor = Tensor::new(&[next], &self.device)?.unsqueeze(0)?;
-            let logits = model.forward(&tensor, input_ids.len() + idx - 1, cache)?;
+            let logits = {
+                let cache = self.cache.as_mut().unwrap();
+                model.forward(&tensor, input_ids.len() + idx - 1, cache)?
+            };
             
             // Single token: [batch=1, vocab]
             let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
@@ -391,34 +396,71 @@ impl LocalModel {
             generated.push(next);
         }
 
-        // Try both skip_special_tokens settings
-        let decoded_no_skip = self.tokenizer.decode(&generated, false)
-            .map_err(|e| InfluenceError::LocalModelError(format!("Decode failed: {}", e)))?;
-        let decoded_skip = self.tokenizer.decode(&generated, true)
-            .map_err(|e| InfluenceError::LocalModelError(format!("Decode failed: {}", e)))?;
+        // The Rust tokenizers crate doesn't properly apply the decoder's Replace rule
+        // that converts ▁ to space. We need to manually reconstruct with proper spacing
+        // by checking each token's raw representation for the ▁ prefix.
         
-        // Debug output to stderr
-        eprintln!("\n=== DEBUG TOKENIZER OUTPUT ===");
-        eprintln!("Generated token count: {}", generated.len());
-        eprintln!("First 5 tokens: {:?}", &generated[..generated.len().min(5)]);
-        eprintln!("Decoded (skip=false, first 50 chars): {:?}", &decoded_no_skip.chars().take(50).collect::<String>());
-        eprintln!("Decoded (skip=true, first 50 chars): {:?}", &decoded_skip.chars().take(50).collect::<String>());
-        eprintln!("Contains ▁ (U+2581): {}", decoded_no_skip.contains('\u{2581}'));
-        eprintln!("Byte lengths: no_skip={}, skip={}", decoded_no_skip.len(), decoded_skip.len());
+        let mut result = String::new();
+        let mut skipped_special = 0;
         
-        // Check if they're the same
-        if decoded_no_skip == decoded_skip {
-            eprintln!("WARNING: Both decode methods produce identical output!");
+        for (i, &token_id) in generated.iter().enumerate() {
+            // Get the raw token from vocabulary to check for ▁ prefix
+            let raw_token = self.tokenizer.id_to_token(token_id);
+            
+            // Skip special tokens
+            if let Some(ref token) = raw_token {
+                if token == "</s>" || token == "<s>" || token == "<unk>" {
+                    skipped_special += 1;
+                    continue;
+                }
+            }
+            
+            // Get the decoded token string (without ▁)
+            let token_str = self.tokenizer.decode(&[token_id], false)
+                .map_err(|e| InfluenceError::LocalModelError(format!("Token decode failed: {}", e)))?;
+            
+            // Check if the raw token starts with ▁ (space marker)
+            if let Some(raw) = raw_token {
+                if raw.starts_with('▁') {
+                    // Add space before this token (except at the very start)
+                    let actual_index = i - skipped_special;
+                    if actual_index > 0 && !result.is_empty() {
+                        result.push(' ');
+                    }
+                }
+            }
+            
+            result.push_str(&token_str);
         }
-        eprintln!("==============================\n");
         
-        // The tokenizer should handle spacing automatically with skip_special_tokens=true
-        Ok(decoded_skip)
+        Ok(result.trim().to_string())
     }
 
     fn get_eos_token(&self) -> Option<u32> {
         self.tokenizer.token_to_id("</s>")
             .or_else(|| self.tokenizer.token_to_id("<EOS>"))
+    }
+
+    fn print_stream_token(tokenizer: &Tokenizer, token_id: u32, started: &mut bool) -> Result<()> {
+        if let Some(raw) = tokenizer.id_to_token(token_id) {
+            if raw == "</s>" || raw == "<s>" || raw == "<unk>" {
+                return Ok(());
+            }
+
+            if raw.starts_with('▁') && *started {
+                print!(" ");
+            }
+        }
+
+        let text = tokenizer.decode(&[token_id], false)?;
+        if text.is_empty() {
+            return Ok(());
+        }
+
+        print!("{}", text);
+        std::io::stdout().flush().unwrap();
+        *started = true;
+        Ok(())
     }
 
     pub async fn generate_stream(&mut self, prompt: &str, max_tokens: usize, temp: f32) -> Result<()> {
@@ -431,13 +473,16 @@ impl LocalModel {
 
         let tokens = self.tokenizer.encode(prompt, false)?;
         let input_ids: Vec<u32> = tokens.get_ids().to_vec();
+        let tokenizer = &self.tokenizer;
         let model = self.model.as_ref().unwrap();
         let eos_token = self.get_eos_token();
-        let cache = self.cache.as_mut().unwrap();
 
         // Process prompt
         let prompt_tensor = Tensor::new(&input_ids[..], &self.device)?.unsqueeze(0)?;
-        let logits = model.forward(&prompt_tensor, 0, cache)?;
+        let logits = {
+            let cache = self.cache.as_mut().unwrap();
+            model.forward(&prompt_tensor, 0, cache)?
+        };
         
         let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
         let last_logits = &logits_vec[0];
@@ -452,9 +497,8 @@ impl LocalModel {
             }
         }
         
-        let text = self.tokenizer.decode(&[next], false)?;
-        print!("{}", text);
-        std::io::stdout().flush().unwrap();
+        let mut started = false;
+        Self::print_stream_token(tokenizer, next, &mut started)?;
         
         // Generate remaining tokens
         for idx in 1..max_tokens {
@@ -463,7 +507,10 @@ impl LocalModel {
             }
             
             let tensor = Tensor::new(&[next], &self.device)?.unsqueeze(0)?;
-            let logits = model.forward(&tensor, input_ids.len() + idx - 1, cache)?;
+            let logits = {
+                let cache = self.cache.as_mut().unwrap();
+                model.forward(&tensor, input_ids.len() + idx - 1, cache)?
+            };
             
             let logits_vec = logits.to_dtype(DType::F32)?.to_vec2::<f32>()?;
             let token_logits = &logits_vec[0];
@@ -477,9 +524,7 @@ impl LocalModel {
                 }
             }
 
-            let text = self.tokenizer.decode(&[next], false)?;
-            print!("{}", text);
-            std::io::stdout().flush().unwrap();
+            Self::print_stream_token(tokenizer, next, &mut started)?;
         }
         println!();
         Ok(())

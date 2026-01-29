@@ -26,20 +26,19 @@
 ## Quick Start
 
 ```bash
-# Install (requires Rust)
-cargo install influence
-
-# Or build from source
+# Build from source
+git clone https://github.com/yingkitw/influence.git
+cd influence
 cargo build --release
 
 # Search for a model
-influence search "tinyllama" --limit 5
+./target/release/influence search "tinyllama" --limit 5
 
 # Download a model (~1GB for TinyLlama)
-influence download -m TinyLlama/TinyLlama-1.1B-Chat-v1.0
+./target/release/influence download -m TinyLlama/TinyLlama-1.1B-Chat-v1.0
 
-# Generate text locally
-influence generate "Explain quantum computing in simple terms" \
+# Generate text locally (with Metal GPU on macOS)
+./target/release/influence generate "Explain quantum computing in simple terms" \
   --model-path ./models/TinyLlama_TinyLlama-1.1B-Chat-v1.0
 ```
 
@@ -90,25 +89,48 @@ influence generate "Write a technical introduction to vector databases" \
 - Exposing your ideas to third parties
 - Worrying about content policies
 
+## Current Status
+
+**Version 0.1.0** - Core Features Working
+
+- OK Model search on HuggingFace
+- OK Model downloading with progress tracking
+- OK Local Llama-architecture inference (Llama, Mistral, Phi, Granite)
+- OK Token spacing and formatting
+- OK Metal GPU acceleration on macOS (enabled by default)
+- OK Streaming text generation
+- OK Temperature-based sampling
+- OK KV caching for performance
+- OK Architecture detection with helpful error messages
+
+**Tested Models:**
+- `TinyLlama/TinyLlama-1.1B-Chat-v1.0` - Working perfectly
+- Other Llama-architecture models - Supported
+
 ## Installation
 
-### From Source (Recommended)
+### Build from Source
 
 ```bash
-# Clone and build
-git clone https://github.com/yourusername/influence.git
+# Clone the repository
+git clone https://github.com/yingkitw/influence.git
 cd influence
+
+# Build release binary with Metal support (macOS)
 cargo build --release
 
 # The binary will be at target/release/influence
-# Add to your PATH:
-export PATH="$PATH:$(pwd)/target/release"
+./target/release/influence --help
 ```
 
-### Via Cargo (Coming Soon)
+**Features:**
+- `metal` (default) - Metal GPU acceleration for macOS
+- `accelerate` - CPU acceleration for macOS
+- `cuda` - CUDA support for NVIDIA GPUs (placeholder)
 
+**Build without GPU:**
 ```bash
-cargo install influence
+cargo build --release --no-default-features
 ```
 
 ## Command Reference
@@ -295,13 +317,20 @@ Each model directory must contain:
 - KV Caching - Reuse computed tensors for faster generation
 - Memory Mapping - Zero-copy model loading
 - Streaming Output - Display tokens as they're generated
-- GPU Acceleration - Metal support on macOS (CUDA coming soon)
+- GPU Acceleration - Metal support on macOS (enabled by default)
+- Proper Token Spacing - Handles SentencePiece space markers correctly
 
 **Memory Usage:**
 - TinyLlama (1B): ~2GB RAM
 - Phi-2 (2.7B): ~4GB RAM
 - Mistral-7B: ~14GB RAM
 - Add model size for total memory requirement
+
+**Performance Tips:**
+- On macOS: Metal GPU is enabled by default for faster inference
+- On Linux/Windows: CUDA support planned (use CPU for now)
+- Use smaller models (TinyLlama) for faster responses
+- Reduce `--max-tokens` for quicker generation
 
 ## Troubleshooting
 

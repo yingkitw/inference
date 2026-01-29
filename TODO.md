@@ -59,10 +59,10 @@
 - [x] Fix logits extraction and softmax dimension errors
 - [x] Test with TinyLlama model - WORKING!
 - [x] Add Metal GPU support for macOS - WORKING!
-- [ ] Fix token spacing in decoded output
+- [x] Fix token spacing in decoded output - WORKING!
 - [ ] Test with additional model architectures
 - [ ] Add CUDA support for Linux/Windows
-- [ ] Implement quantization supportation
+- [ ] Implement quantization support
 - [ ] Add model caching in memory
 - [ ] Optimize tokenization performance
 
