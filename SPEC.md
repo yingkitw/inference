@@ -125,6 +125,9 @@ Generate text using local LLM inference.
 **Options:**
 - `--max-tokens <n>` - Maximum tokens to generate (default: 512)
 - `--temperature <t>` - Sampling temperature (default: 0.7)
+- `--system <text>` - Optional system prompt prepended before user prompt
+- `--device <auto|cpu|metal|cuda>` - Compute backend selection (default: auto)
+- `--device-index <n>` - GPU ordinal for metal/cuda backends (default: 0)
 
 **Process:**
 1. Load tokenizer from model directory

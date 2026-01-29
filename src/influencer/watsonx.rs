@@ -1,5 +1,5 @@
 use crate::error::{InfluenceError, Result};
-use crate::local::{LocalModel, LocalModelConfig};
+use crate::influencer::service::LlmService;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tracing::{info, error, debug};
@@ -8,6 +8,7 @@ use futures::StreamExt;
 
 const WATSONX_URL: &str = "https://us-south.ml.cloud.ibm.com/ml/v1/text/generation_stream";
 
+/// Configuration for WatsonX cloud service
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InfluencerConfig {
     pub api_key: String,
@@ -52,14 +53,10 @@ struct StreamResult {
     generated_text: Option<String>,
 }
 
-pub trait LlmService {
-    async fn generate_text(&mut self, prompt: &str, max_tokens: usize, temperature: f32) -> Result<String>;
-    async fn generate_stream(&mut self, prompt: &str, max_tokens: usize, temperature: f32) -> Result<()>;
-}
-
+/// WatsonX cloud service implementation
 pub struct WatsonXService {
     client: Client,
-    config: InfluencerConfig,
+    pub config: InfluencerConfig,
 }
 
 impl WatsonXService {
@@ -200,7 +197,6 @@ impl LlmService for WatsonXService {
                                     for result in results {
                                         if let Some(text) = result.generated_text {
                                             print!("{}", text);
-                                            use std::io::Write;
                                             std::io::stdout().flush().unwrap();
                                         }
                                     }
@@ -221,10 +217,11 @@ impl LlmService for WatsonXService {
     }
 }
 
-fn load_config(_model_path: Option<&Path>) -> Result<InfluencerConfig> {
+/// Load WatsonX configuration from environment variables
+pub fn load_config(_model_path: Option<&Path>) -> Result<InfluencerConfig> {
     let api_key = std::env::var("WATSONX_API_KEY")
         .map_err(|_| InfluenceError::InvalidConfig("WATSONX_API_KEY not set".into()))?;
-    
+
     let project_id = std::env::var("WATSONX_PROJECT_ID")
         .map_err(|_| InfluenceError::InvalidConfig("WATSONX_PROJECT_ID not set".into()))?;
 
@@ -239,67 +236,6 @@ fn load_config(_model_path: Option<&Path>) -> Result<InfluencerConfig> {
     })
 }
 
-pub async fn serve(model_path: Option<&Path>, port: u16) -> Result<()> {
-    info!("Starting influencer service on port {}", port);
-    
-    let config = load_config(model_path)?;
-    let service = WatsonXService::new(config)?;
-
-    info!("Service initialized with model: {}", service.config.model_id);
-    info!("Service is ready. Use the 'generate' command to test it.");
-
-    Ok(())
-}
-
-pub async fn generate(
-    prompt: &str,
-    system: Option<&str>,
-    model_path: Option<&Path>,
-    max_tokens: usize,
-    temperature: f32,
-    device: &str,
-    device_index: usize,
-) -> Result<()> {
-    info!("Generating response for prompt: {}", prompt);
-
-    // Require local model path
-    let path = model_path.ok_or_else(|| InfluenceError::InvalidConfig(
-        "Model path is required for generation. Use --model-path <path> to specify a local model directory.".to_string()
-    ))?;
-
-    info!("Using local model from: {}", path.display());
-
-    let device_preference = device.parse()?;
-
-    let config = LocalModelConfig {
-        model_path: path.to_path_buf(),
-        temperature,
-        max_seq_len: max_tokens * 2, // Give some room for the prompt
-        device_preference,
-        device_index,
-        ..Default::default()
-    };
-
-    let mut local_model = LocalModel::load(config).await?;
-    println!("\n--- Local Generation ---");
-
-    let effective_prompt = match system {
-        Some(system_prompt) if !system_prompt.trim().is_empty() => {
-            format!(
-                "System: {}\n\nUser: {}\n\nAssistant:",
-                system_prompt.trim(),
-                prompt
-            )
-        }
-        _ => prompt.to_string(),
-    };
-
-    local_model.generate_stream(&effective_prompt, max_tokens, temperature).await?;
-    println!("\n--- End ---\n");
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,10 +248,10 @@ mod tests {
             model_id: "ibm/granite-4-h-small".to_string(),
             url: None,
         };
-        
+
         let service = WatsonXService::new(config).unwrap();
         let formatted = service.format_granite_prompt("Hello");
-        
+
         assert!(formatted.contains("<|start_of_role|>user<|end_of_role|>"));
         assert!(formatted.contains("Hello"));
         assert!(formatted.contains("<|start_of_role|>assistant<|end_of_role|>"));
@@ -327,7 +263,7 @@ mod tests {
             std::env::remove_var("WATSONX_API_KEY");
             std::env::remove_var("WATSONX_PROJECT_ID");
         }
-        
+
         let result = load_config(None);
         assert!(result.is_err());
     }

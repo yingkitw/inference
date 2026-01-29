@@ -54,14 +54,16 @@
 ## Future Enhancements
 
 ### Model Support
-- [ ] Add Mistral model support (architecture-specific loading)
+- [x] Add Mistral model support (architecture-specific loading)
 - [ ] Add Phi model support
 - [x] Fix logits extraction and softmax dimension errors
 - [x] Test with TinyLlama model - WORKING!
 - [x] Add Metal GPU support for macOS - WORKING!
 - [x] Fix token spacing in decoded output - WORKING!
 - [ ] Test with additional model architectures
-- [ ] Add CUDA support for Linux/Windows
+- [x] Add CUDA support for Linux/Windows
+- [x] Add --device/--device-index flags for explicit backend selection
+- [ ] Test local generation with an actual Mistral model from HuggingFace
 - [ ] Implement quantization support
 - [ ] Add model caching in memory
 - [ ] Optimize tokenization performance
@@ -74,7 +76,7 @@
 
 ### Features
 - [ ] Add chat mode with conversation history
-- [ ] Add system prompt support
+- [x] Add system prompt support
 - [ ] Add top-p and top-k sampling options
 - [ ] Add repetition penalty control
 - [ ] Add configuration file support

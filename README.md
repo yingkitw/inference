@@ -39,7 +39,8 @@ cargo build --release
 
 # Generate text locally (with Metal GPU on macOS)
 ./target/release/influence generate "Explain quantum computing in simple terms" \
-  --model-path ./models/TinyLlama_TinyLlama-1.1B-Chat-v1.0
+  --model-path ./models/TinyLlama_TinyLlama-1.1B-Chat-v1.0 \
+  --device metal
 ```
 
 ## Usage Examples

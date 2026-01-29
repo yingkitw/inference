@@ -50,6 +50,9 @@ pub enum Commands {
         #[arg(help = "Prompt text")]
         prompt: String,
 
+        #[arg(long, help = "Optional system prompt")]
+        system: Option<String>,
+
         #[arg(short, long, help = "Path to model directory")]
         model_path: Option<PathBuf>,
 
@@ -58,5 +61,159 @@ pub enum Commands {
 
         #[arg(long, default_value = "0.7", help = "Temperature for generation")]
         temperature: f32,
+
+        #[arg(long, default_value = "auto", help = "Compute device: auto|cpu|metal|cuda")]
+        device: String,
+
+        #[arg(long, default_value = "0", help = "Device index (GPU ordinal) when using metal/cuda")]
+        device_index: usize,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_download_command_parsing() {
+        let args = vec!["influence", "download", "-m", "test/model", "-r", "https://example.com", "-o", "/tmp/models"];
+        let cli = Cli::try_parse_from(args);
+
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Download { model, mirror, output } => {
+                assert_eq!(model, "test/model");
+                assert_eq!(mirror, Some("https://example.com".to_string()));
+                assert_eq!(output, Some(PathBuf::from("/tmp/models")));
+            }
+            _ => panic!("Expected Download command"),
+        }
+    }
+
+    #[test]
+    fn test_search_command_parsing() {
+        let args = vec!["influence", "search", "llama", "--limit", "10", "--author", "meta"];
+        let cli = Cli::try_parse_from(args);
+
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Search { query, limit, author } => {
+                assert_eq!(query, "llama");
+                assert_eq!(limit, 10);
+                assert_eq!(author, Some("meta".to_string()));
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_default_limit() {
+        let args = vec!["influence", "search", "query"];
+        let cli = Cli::try_parse_from(args);
+
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Search { limit, .. } => {
+                assert_eq!(limit, 20);
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_generate_command_parsing() {
+        let args = vec![
+            "influence",
+            "generate",
+            "Hello world",
+            "--system",
+            "You are a helpful assistant.",
+            "--model-path",
+            "/models",
+            "--max-tokens",
+            "100",
+            "--temperature",
+            "0.5",
+            "--device",
+            "cpu",
+            "--device-index",
+            "1",
+        ];
+        let cli = Cli::try_parse_from(args);
+
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Generate { prompt, system, model_path, max_tokens, temperature, device, device_index } => {
+                assert_eq!(prompt, "Hello world");
+                assert_eq!(system, Some("You are a helpful assistant.".to_string()));
+                assert_eq!(model_path, Some(PathBuf::from("/models")));
+                assert_eq!(max_tokens, 100);
+                assert_eq!(temperature, 0.5);
+                assert_eq!(device, "cpu");
+                assert_eq!(device_index, 1);
+            }
+            _ => panic!("Expected Generate command"),
+        }
+    }
+
+    #[test]
+    fn test_generate_default_values() {
+        let args = vec!["influence", "generate", "test"];
+        let cli = Cli::try_parse_from(args);
+
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Generate { max_tokens, temperature, device, device_index, .. } => {
+                assert_eq!(max_tokens, 512);
+                assert_eq!(temperature, 0.7);
+                assert_eq!(device, "auto");
+                assert_eq!(device_index, 0);
+            }
+            _ => panic!("Expected Generate command"),
+        }
+    }
+
+    #[test]
+    fn test_serve_command_parsing() {
+        let args = vec!["influence", "serve", "--model-path", "/models", "--port", "9000"];
+        let cli = Cli::try_parse_from(args);
+
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Serve { model_path, port } => {
+                assert_eq!(model_path, Some(PathBuf::from("/models")));
+                assert_eq!(port, 9000);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_serve_default_port() {
+        let args = vec!["influence", "serve"];
+        let cli = Cli::try_parse_from(args);
+
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Serve { port, .. } => {
+                assert_eq!(port, 8080);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_invalid_command() {
+        let args = vec!["influence", "invalid-command"];
+        let cli = Cli::try_parse_from(args);
+
+        assert!(cli.is_err());
+    }
 }

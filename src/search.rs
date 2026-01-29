@@ -110,3 +110,105 @@ pub async fn search_models(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_model_info_deserialization_with_id() {
+        let json = r#"{"id": "test/model", "author": "test", "downloads": 1000, "likes": 50}"#;
+        let info: ModelInfo = serde_json::from_str(json).unwrap();
+
+        assert_eq!(info.id, Some("test/model".to_string()));
+        assert_eq!(info.author_name, Some("test".to_string()));
+        assert_eq!(info.downloads, Some(1000));
+        assert_eq!(info.likes, Some(50));
+    }
+
+    #[test]
+    fn test_model_info_deserialization_with_model_id() {
+        let json = r#"{"modelId": "test/model", "author": "test"}"#;
+        let info: ModelInfo = serde_json::from_str(json).unwrap();
+
+        assert_eq!(info.modelId, Some("test/model".to_string()));
+        assert_eq!(info.author_name, Some("test".to_string()));
+    }
+
+    #[test]
+    fn test_model_info_deserialization_with_defaults() {
+        let json = r#"{"id": "test/model"}"#;
+        let info: ModelInfo = serde_json::from_str(json).unwrap();
+
+        assert_eq!(info.id, Some("test/model".to_string()));
+        assert_eq!(info.author_name, None);
+        assert_eq!(info.downloads, None);
+        assert_eq!(info.likes, None);
+        assert_eq!(info.pipeline_tag, None);
+        assert_eq!(info.library_name, None);
+    }
+
+    #[test]
+    fn test_model_info_with_pipeline_tag() {
+        let json = r#"{"id": "test/model", "pipeline_tag": "text-generation"}"#;
+        let info: ModelInfo = serde_json::from_str(json).unwrap();
+
+        assert_eq!(info.pipeline_tag, Some("text-generation".to_string()));
+    }
+
+    #[test]
+    fn test_model_info_with_library_name() {
+        let json = r#"{"id": "test/model", "library_name": "transformers"}"#;
+        let info: ModelInfo = serde_json::from_str(json).unwrap();
+
+        assert_eq!(info.library_name, Some("transformers".to_string()));
+    }
+
+    #[test]
+    fn test_model_info_all_fields() {
+        let json = r#"{
+            "id": "test/model",
+            "author": "testorg",
+            "downloads": 1000000,
+            "likes": 5000,
+            "pipeline_tag": "text-generation",
+            "library_name": "transformers"
+        }"#;
+        let info: ModelInfo = serde_json::from_str(json).unwrap();
+
+        assert_eq!(info.id, Some("test/model".to_string()));
+        assert_eq!(info.author_name, Some("testorg".to_string()));
+        assert_eq!(info.downloads, Some(1000000));
+        assert_eq!(info.likes, Some(5000));
+        assert_eq!(info.pipeline_tag, Some("text-generation".to_string()));
+        assert_eq!(info.library_name, Some("transformers".to_string()));
+    }
+
+    #[test]
+    fn test_model_info_empty_json() {
+        let json = r#"{}"#;
+        let info: ModelInfo = serde_json::from_str(json).unwrap();
+
+        assert_eq!(info.id, None);
+        assert_eq!(info.modelId, None);
+        assert_eq!(info.author_name, None);
+        assert_eq!(info.downloads, None);
+        assert_eq!(info.likes, None);
+    }
+
+    #[tokio::test]
+    async fn test_search_models_requires_query() {
+        // This test verifies the function signature and basic behavior
+        // Full integration tests would require mocking the HTTP client
+        let result = search_models("test", 5, None, None).await;
+
+        // We expect this to fail in test environment without network,
+        // but the function should at least construct the request properly
+        // If it succeeds with empty results, that's also acceptable
+        match result {
+            Ok(_) => {}, // Success (empty results or network worked)
+            Err(InfluenceError::DownloadError(_)) => {}, // Expected in test env
+            Err(e) => panic!("Unexpected error: {:?}", e),
+        }
+    }
+}

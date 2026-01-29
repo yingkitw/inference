@@ -31,8 +31,16 @@ async fn main() -> anyhow::Result<()> {
         Commands::Serve { model_path, port } => {
             influencer::serve(model_path.as_deref(), port).await?;
         }
-        Commands::Generate { prompt, model_path, max_tokens, temperature } => {
-            influencer::generate(&prompt, model_path.as_deref(), max_tokens, temperature).await?;
+        Commands::Generate { prompt, system, model_path, max_tokens, temperature, device, device_index } => {
+            influencer::generate(
+                &prompt,
+                system.as_deref(),
+                model_path.as_deref(),
+                max_tokens,
+                temperature,
+                &device,
+                device_index,
+            ).await?;
         }
     }
 
