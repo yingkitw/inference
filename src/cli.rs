@@ -24,6 +24,18 @@ pub enum Commands {
         output: Option<PathBuf>,
     },
 
+    #[command(about = "Search for models on HuggingFace")]
+    Search {
+        #[arg(help = "Search query")]
+        query: String,
+
+        #[arg(short, long, default_value = "20", help = "Maximum number of results")]
+        limit: usize,
+
+        #[arg(short, long, help = "Filter by author/organization")]
+        author: Option<String>,
+    },
+
     #[command(about = "Serve LLM as influencer")]
     Serve {
         #[arg(short, long, help = "Path to model directory")]

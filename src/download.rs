@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
-use tracing::info;
+use tracing::{info, warn};
 
 const DEFAULT_MIRROR: &str = "https://hf-mirror.com";
 
@@ -48,17 +48,62 @@ pub async fn download_model(
     // Fetch the list of files to download (with fallback)
     let files_to_download = get_model_files(&client, mirror_url, model).await?;
 
-    for file in files_to_download {
+    let total_files = files_to_download.len();
+    info!("Starting download of {} files...", total_files);
+
+    let overall_progress = ProgressBar::new(total_files as u64);
+    overall_progress.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files ({percent}%)")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let mut skipped_files: Vec<String> = Vec::new();
+    let mut successful_downloads: usize = 0;
+
+    for file in &files_to_download {
         let url = format!("{}/{}/resolve/main/{}", mirror_url, model, file);
-        let file_path = output_dir.join(&file);
+        let file_path = output_dir.join(file);
 
         if let Some(parent) = file_path.parent() {
             fs::create_dir_all(parent).await?;
         }
 
         info!("Downloading: {}", file);
-        download_file(&client, &url, &file_path).await
-            .map_err(|e| InfluenceError::DownloadError(format!("Failed to download {}: {}", file, e)))?;
+
+        match download_file(&client, &url, &file_path).await {
+            Ok(()) => {
+                successful_downloads += 1;
+            }
+            Err(e) => {
+                // Check if this is a 403 Forbidden error (gated model)
+                if e.to_string().contains("403") {
+                    warn!("Skipping {} (access forbidden - this may be a gated model file)", file);
+                    skipped_files.push(file.clone());
+                } else {
+                    // For other errors, still report but continue
+                    warn!("Failed to download {}: {}", file, e);
+                    skipped_files.push(file.clone());
+                }
+            }
+        }
+
+        overall_progress.inc(1);
+    }
+
+    overall_progress.finish_with_message(format!("Download complete: {}/{} files", successful_downloads, total_files));
+
+    if !skipped_files.is_empty() {
+        warn!("Skipped files: {}", skipped_files.join(", "));
+        warn!("Some files could not be downloaded. This model may be gated or require authentication.");
+        warn!("Visit https://huggingface.co/{}/request-access to request access if needed.", model);
+    }
+
+    if successful_downloads == 0 {
+        return Err(InfluenceError::DownloadError(
+            format!("No files could be downloaded. The model '{}' may be gated or require authentication. Visit https://huggingface.co/{}/request-access to request access.", model, model)
+        ));
     }
 
     info!("Model downloaded successfully to: {}", output_dir.display());
@@ -70,11 +115,9 @@ fn get_output_dir(model: &str, output: Option<&Path>) -> Result<PathBuf> {
         return Ok(path.to_path_buf());
     }
 
-    let dirs = directories::ProjectDirs::from("com", "influence", "influence")
-        .ok_or_else(|| InfluenceError::InvalidConfig("Cannot determine home directory".into()))?;
-
+    // Use a local working folder "models" instead of system directory
     let model_name = model.replace('/', "_");
-    Ok(dirs.data_dir().join("models").join(model_name))
+    Ok(PathBuf::from("models").join(model_name))
 }
 
 async fn check_model_exists(client: &Client, mirror_url: &str, model: &str) -> Result<()> {
@@ -193,18 +236,30 @@ async fn download_file(client: &Client, url: &str, path: &Path) -> Result<()> {
     }
 
     let total_size = response.content_length().unwrap_or(0);
+    let file_name = path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file");
 
     let pb = if total_size > 0 {
         let pb = ProgressBar::new(total_size);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})\n   {msg}")
                 .unwrap()
                 .progress_chars("#>-"),
         );
+        pb.set_message(format!("Downloading: {}", file_name));
         Some(pb)
     } else {
-        None
+        // For files without known size, show a spinner
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} [{elapsed_precise}] {msg}")
+                .unwrap()
+        );
+        pb.set_message(format!("Downloading: {} (size unknown)", file_name));
+        Some(pb)
     };
 
     let mut file = File::create(path).await?;
@@ -217,11 +272,17 @@ async fn download_file(client: &Client, url: &str, path: &Path) -> Result<()> {
         downloaded += chunk.len() as u64;
         if let Some(ref pb) = pb {
             pb.set_position(downloaded);
+
+            // Update message periodically with progress percentage
+            if total_size > 0 {
+                let percent = (downloaded as f64 / total_size as f64 * 100.0) as u64;
+                pb.set_message(format!("{}: {}%", file_name, percent));
+            }
         }
     }
 
     if let Some(pb) = pb {
-        pb.finish_with_message("Downloaded");
+        pb.finish_with_message(format!("✓ {}", file_name));
     }
 
     file.sync_all().await?;
