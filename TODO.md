@@ -110,6 +110,6 @@
 - Models requiring specialized implementations
 
 ### Current Limitations
-- CPU inference only (GPU support via Metal/CUDA available)
+- GPU support via Metal/CUDA available
 - No batch generation
 - Llama-architecture only for inference (Mistral partially implemented)
