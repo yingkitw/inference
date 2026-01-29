@@ -22,6 +22,9 @@ pub enum InfluenceError {
 
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
+
+    #[error("Local model error: {0}")]
+    LocalModelError(String),
 }
 
 pub type Result<T> = std::result::Result<T, InfluenceError>;

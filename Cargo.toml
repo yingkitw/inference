@@ -23,6 +23,13 @@ hex = "0.4"
 base64 = "0.22"
 urlencoding = "2.1"
 
+# Local ML inference dependencies
+candle-core = "0.8"
+candle-nn = "0.8"
+candle-transformers = "0.8"
+tokenizers = "0.21"
+accelerate-src = { version = "0.3", optional = true }
+
 [dev-dependencies]
 tempfile = "3.14"
 mockito = "1.6"

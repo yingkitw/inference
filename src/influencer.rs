@@ -1,4 +1,5 @@
 use crate::error::{InfluenceError, Result};
+use crate::local::{LocalModel, LocalModelConfig};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tracing::{info, error, debug};
@@ -257,16 +258,35 @@ pub async fn generate(
     temperature: f32,
 ) -> Result<()> {
     info!("Generating response for prompt: {}", prompt);
-    
-    let config = load_config(model_path)?;
-    let service = WatsonXService::new(config)?;
 
-    info!("Using model: {}", service.config.model_id);
-    println!("\n--- Response ---");
-    
-    service.generate_stream(prompt, max_tokens, temperature).await?;
-    
-    println!("\n--- End ---\n");
+    // Check if local model path is provided
+    if let Some(path) = model_path {
+        info!("Using local model from: {}", path.display());
+
+        let config = LocalModelConfig {
+            model_path: path.to_path_buf(),
+            temperature,
+            max_seq_len: max_tokens * 2, // Give some room for the prompt
+            ..Default::default()
+        };
+
+        let mut local_model = LocalModel::load(config).await?;
+        println!("\n--- Local Generation ---");
+        local_model.generate_stream(prompt, max_tokens, temperature).await?;
+        println!("\n--- End ---\n");
+    } else {
+        // Use WatsonX cloud service
+        let config = load_config(None)?;
+        let service = WatsonXService::new(config)?;
+
+        info!("Using WatsonX cloud model: {}", service.config.model_id);
+        println!("\n--- Response ---");
+
+        service.generate_stream(prompt, max_tokens, temperature).await?;
+
+        println!("\n--- End ---\n");
+    }
+
     Ok(())
 }
 

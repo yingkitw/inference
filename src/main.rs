@@ -2,6 +2,7 @@ mod cli;
 mod download;
 mod search;
 mod influencer;
+mod local;
 mod error;
 
 use clap::Parser;
