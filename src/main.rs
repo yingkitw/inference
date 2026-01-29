@@ -5,6 +5,7 @@ mod error;
 mod format;
 mod influencer;
 mod local;
+mod models;
 mod search;
 
 use clap::Parser;
@@ -77,6 +78,8 @@ async fn main() -> Result<()> {
             repeat_penalty,
             device,
             device_index,
+            session,
+            save_on_exit,
         } => {
             influencer::chat(
                 &model_path,
@@ -88,10 +91,53 @@ async fn main() -> Result<()> {
                 repeat_penalty,
                 &device,
                 device_index,
+                session.as_deref(),
+                save_on_exit.as_deref(),
             ).await?;
         }
         Commands::Embed { text, model_path, device, device_index } => {
             influencer::embed(&text, &model_path, &device, device_index).await?;
+        }
+        Commands::List { models_dir } => {
+            let models_dir_path = models_dir.as_deref();
+            let models = models::list_models(models_dir_path)?;
+
+            if models.is_empty() {
+                println!("No models found.");
+                println!("\nTo download a model, use:");
+                println!("  influence download -m <model-name>");
+                println!("\nExample:");
+                println!("  influence download -m TinyLlama/TinyLlama-1.1B-Chat-v1.0");
+            } else {
+                models::display_models(&models);
+            }
+        }
+        Commands::Deploy {
+            model_path,
+            port,
+            device,
+            device_index,
+            detached,
+        } => {
+            let model = model_path.or_else(config::get_model_path);
+
+            if detached {
+                println!("🚀 Deploying model in background mode...");
+                println!("   Server will be accessible at: http://localhost:{}", port);
+                println!("\nTo stop the server later, find the process ID:");
+                println!("  ps aux | grep influence");
+                println!("\nThen kill it:");
+                println!("  kill <pid>");
+                println!("\nStarting background server...\n");
+            }
+
+            influencer::serve(model.as_deref(), port, &device, device_index).await?;
+
+            if detached {
+                println!("\n✅ Model deployed successfully!");
+                println!("\nTest the deployment:");
+                println!("  curl http://localhost:{}/health", port);
+            }
         }
     }
 

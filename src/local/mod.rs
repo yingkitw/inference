@@ -11,6 +11,9 @@ use std::time::Instant;
 mod backends;
 mod device;
 
+#[cfg(feature = "gguf")]
+mod gguf_backend;
+
 pub use backends::LocalBackend;
 pub use device::get_device;
 
@@ -120,8 +123,24 @@ impl LocalModel {
         info!("Using device: {:?}", device);
 
         let backend = match architecture {
-            ModelArchitecture::Llama | ModelArchitecture::LlamaQuantized => {
+            ModelArchitecture::Llama => {
                 LocalBackend::load_llama(&config, &device)?
+            }
+            ModelArchitecture::LlamaQuantized => {
+                // Try GGUF first if available
+                #[cfg(feature = "gguf")]
+                {
+                    if let Some(gguf_backend) = LocalBackend::load_gguf(&config, &device)? {
+                        Some(gguf_backend)
+                    } else {
+                        // Fallback to regular safetensors
+                        LocalBackend::load_llama(&config, &device)?
+                    }
+                }
+                #[cfg(not(feature = "gguf"))]
+                {
+                    LocalBackend::load_llama(&config, &device)?
+                }
             }
             ModelArchitecture::Mistral => LocalBackend::load_mistral(&config, &device)?,
             ModelArchitecture::Mamba => LocalBackend::load_mamba(&config, &device)?,
@@ -163,6 +182,26 @@ impl LocalModel {
     }
 
     fn detect_architecture(model_path: &Path) -> Result<ModelArchitecture> {
+        // Check for GGUF files first
+        #[cfg(feature = "gguf")]
+        {
+            if let Ok(entries) = fs::read_dir(model_path) {
+                let has_gguf = entries
+                    .flatten()
+                    .any(|entry| {
+                        entry.path()
+                            .extension()
+                            .map_or(false, |ext| ext == "gguf")
+                    });
+
+                if has_gguf {
+                    info!("Detected GGUF model");
+                    return Ok(ModelArchitecture::LlamaQuantized);
+                }
+            }
+        }
+
+        // Check for standard config.json
         let config_path = model_path.join("config.json");
         if !config_path.exists() {
             return Ok(ModelArchitecture::Llama);
@@ -365,6 +404,14 @@ impl LocalModel {
             LocalBackend::Bert { .. } => {
                 return Err(InfluenceError::LocalModelError(
                     "Encoder-only models (BERT) cannot generate text. Use embeddings instead.".to_string(),
+                ));
+            }
+            #[cfg(feature = "gguf")]
+            LocalBackend::Gguf { backend } => {
+                return Err(InfluenceError::LocalModelError(
+                    format!("GGUF inference is not yet implemented. File detected: {} (quantization: {})",
+                        backend.path().display(),
+                        backend.quantization())
                 ));
             }
         };
@@ -784,6 +831,14 @@ impl LocalModel {
                     "Encoder-only models (BERT) cannot generate text. Use embeddings instead.".to_string(),
                 ));
             }
+            #[cfg(feature = "gguf")]
+            LocalBackend::Gguf { backend } => {
+                return Err(InfluenceError::LocalModelError(
+                    format!("GGUF inference is not yet implemented. File detected: {} (quantization: {})",
+                        backend.path().display(),
+                        backend.quantization())
+                ));
+            }
         }
 
         Ok(())
@@ -993,5 +1048,76 @@ mod tests {
         .unwrap();
         let err = LocalModel::detect_architecture(tmp.path()).unwrap_err();
         assert!(err.to_string().to_lowercase().contains("moe"));
+    }
+
+    #[cfg(feature = "gguf")]
+    #[test]
+    fn test_detect_architecture_gguf_file() {
+        let tmp = TempDir::new().unwrap();
+        // Create a GGUF file
+        fs::write(
+            tmp.path().join("model-q4_k_m.gguf"),
+            b"fake gguf content",
+        ).unwrap();
+
+        let arch = LocalModel::detect_architecture(tmp.path()).unwrap();
+        assert!(matches!(arch, ModelArchitecture::LlamaQuantized));
+    }
+
+    #[cfg(feature = "gguf")]
+    #[test]
+    fn test_detect_architecture_gguf_prioritizes_over_config() {
+        let tmp = TempDir::new().unwrap();
+        // Create both a GGUF file and config.json
+        fs::write(
+            tmp.path().join("model.gguf"),
+            b"fake gguf content",
+        ).unwrap();
+        fs::write(
+            tmp.path().join("config.json"),
+            r#"{"model_type":"llama"}"#,
+        ).unwrap();
+
+        // GGUF should be detected first
+        let arch = LocalModel::detect_architecture(tmp.path()).unwrap();
+        assert!(matches!(arch, ModelArchitecture::LlamaQuantized));
+    }
+
+    #[cfg(feature = "gguf")]
+    #[test]
+    fn test_detect_architecture_multiple_gguf_files() {
+        let tmp = TempDir::new().unwrap();
+        // Create multiple GGUF files
+        fs::write(
+            tmp.path().join("model-q4_k_m.gguf"),
+            b"fake gguf content",
+        ).unwrap();
+        fs::write(
+            tmp.path().join("model-q8_0.gguf"),
+            b"fake gguf content",
+        ).unwrap();
+
+        // Should detect GGUF architecture
+        let arch = LocalModel::detect_architecture(tmp.path()).unwrap();
+        assert!(matches!(arch, ModelArchitecture::LlamaQuantized));
+    }
+
+    #[cfg(not(feature = "gguf"))]
+    #[test]
+    fn test_detect_architecture_ignores_gguf_without_feature() {
+        let tmp = TempDir::new().unwrap();
+        // Create a GGUF file
+        fs::write(
+            tmp.path().join("model-q4_k_m.gguf"),
+            b"fake gguf content",
+        ).unwrap();
+        fs::write(
+            tmp.path().join("config.json"),
+            r#"{"model_type":"llama"}"#,
+        ).unwrap();
+
+        // Without gguf feature, should fall back to config.json
+        let arch = LocalModel::detect_architecture(tmp.path()).unwrap();
+        assert!(matches!(arch, ModelArchitecture::Llama));
     }
 }

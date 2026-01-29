@@ -84,7 +84,7 @@ pub enum Commands {
         device_index: usize,
     },
 
-    #[command(about = "Interactive chat mode with conversation history")]
+    #[command(about = "Interactive chat mode with conversation history and slash commands")]
     Chat {
         #[arg(short, long, help = "Path to model directory")]
         model_path: PathBuf,
@@ -112,6 +112,36 @@ pub enum Commands {
 
         #[arg(long, default_value = "0", help = "Device index (GPU ordinal) when using metal/cuda")]
         device_index: usize,
+
+        #[arg(long, help = "Load chat session from file on startup")]
+        session: Option<PathBuf>,
+
+        #[arg(long, help = "Auto-save session to file on exit")]
+        save_on_exit: Option<PathBuf>,
+    },
+
+    #[command(about = "List all downloaded models")]
+    List {
+        #[arg(short, long, help = "Custom models directory")]
+        models_dir: Option<PathBuf>,
+    },
+
+    #[command(about = "Deploy a model by starting the API server")]
+    Deploy {
+        #[arg(short, long, help = "Path to model directory")]
+        model_path: Option<PathBuf>,
+
+        #[arg(short, long, default_value = "8080", help = "Port to serve on")]
+        port: u16,
+
+        #[arg(long, default_value = "auto", help = "Compute device: auto|cpu|metal|cuda")]
+        device: String,
+
+        #[arg(long, default_value = "0", help = "Device index (GPU ordinal) when using metal/cuda")]
+        device_index: usize,
+
+        #[arg(long, help = "Run in background (detach from terminal)")]
+        detached: bool,
     },
 
     #[command(about = "Generate embeddings for encoder-only models (BERT family)")]
@@ -324,13 +354,17 @@ mod tests {
             "metal",
             "--device-index",
             "1",
+            "--session",
+            "chat.json",
+            "--save-on-exit",
+            "output.json",
         ];
         let cli = Cli::try_parse_from(args);
 
         assert!(cli.is_ok());
         let cli = cli.unwrap();
         match cli.command {
-            Commands::Chat { model_path, system, max_tokens, temperature, top_p, top_k, repeat_penalty, device, device_index } => {
+            Commands::Chat { model_path, system, max_tokens, temperature, top_p, top_k, repeat_penalty, device, device_index, session, save_on_exit } => {
                 assert_eq!(model_path, PathBuf::from("/models"));
                 assert_eq!(system, Some("You are a helpful assistant.".to_string()));
                 assert_eq!(max_tokens, 256);
@@ -340,6 +374,8 @@ mod tests {
                 assert_eq!(repeat_penalty, 1.15);
                 assert_eq!(device, "metal");
                 assert_eq!(device_index, 1);
+                assert_eq!(session, Some(PathBuf::from("chat.json")));
+                assert_eq!(save_on_exit, Some(PathBuf::from("output.json")));
             }
             _ => panic!("Expected Chat command"),
         }
@@ -358,7 +394,7 @@ mod tests {
         assert!(cli.is_ok());
         let cli = cli.unwrap();
         match cli.command {
-            Commands::Chat { max_tokens, temperature, top_p, top_k, repeat_penalty, device, device_index, .. } => {
+            Commands::Chat { max_tokens, temperature, top_p, top_k, repeat_penalty, device, device_index, session, save_on_exit, .. } => {
                 assert_eq!(max_tokens, 512);
                 assert_eq!(temperature, 0.7);
                 assert_eq!(top_p, 0.9);
@@ -366,6 +402,8 @@ mod tests {
                 assert_eq!(repeat_penalty, 1.1);
                 assert_eq!(device, "auto");
                 assert_eq!(device_index, 0);
+                assert_eq!(session, None);
+                assert_eq!(save_on_exit, None);
             }
             _ => panic!("Expected Chat command"),
         }

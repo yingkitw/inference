@@ -31,6 +31,15 @@ pub enum InfluenceError {
 
     #[error("Tokenizer error: {0}")]
     TokenizerError(String),
+
+    #[error("GGUF model error: {0}")]
+    GgufError(String),
+
+    #[error("Quantization format '{0}' not supported")]
+    UnsupportedQuantization(String),
+
+    #[error("GGUF file parsing failed: {0}")]
+    GgufParsingError(String),
 }
 
 impl From<candle_core::Error> for InfluenceError {

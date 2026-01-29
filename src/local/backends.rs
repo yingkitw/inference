@@ -21,6 +21,8 @@ pub enum LocalBackend {
     Mamba { model: MambaModel, config: MambaConfig },
     GraniteMoeHybrid { model: GraniteMoeHybrid, config: GraniteMoeHybridInternalConfig },
     Bert { model: BertModel },
+    #[cfg(feature = "gguf")]
+    Gguf { backend: super::gguf_backend::GgufBackend },
 }
 
 impl LocalBackend {
@@ -256,6 +258,47 @@ impl LocalBackend {
 
         info!("Model initialized");
         Ok(Some(LocalBackend::Bert { model }))
+    }
+
+    /// Load a GGUF backend from a GGUF file
+    #[cfg(feature = "gguf")]
+    pub fn load_gguf(config: &LocalModelConfig, device: &Device) -> Result<Option<Self>> {
+        use std::fs;
+        info!("Loading GGUF model...");
+
+        // Find GGUF files in the model directory
+        let gguf_files: Vec<_> = fs::read_dir(&config.model_path)?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry.path()
+                    .extension()
+                    .map_or(false, |ext| ext == "gguf")
+            })
+            .collect();
+
+        if gguf_files.is_empty() {
+            return Ok(None);
+        }
+
+        if gguf_files.len() > 1 {
+            warn!("Multiple GGUF files found, using first: {}",
+                  gguf_files[0].path().display());
+        }
+
+        let gguf_path = &gguf_files[0].path();
+        info!("Found GGUF file: {}", gguf_path.display());
+
+        let backend = super::gguf_backend::GgufBackend::load(config, gguf_path)?;
+
+        info!("GGUF model loaded successfully (quantization: {})",
+              backend.quantization());
+        Ok(Some(LocalBackend::Gguf { backend }))
+    }
+
+    /// Load a GGUF backend (stub when feature is not enabled)
+    #[cfg(not(feature = "gguf"))]
+    pub fn load_gguf(_config: &LocalModelConfig, _device: &Device) -> Result<Option<Self>> {
+        Ok(None)
     }
 }
 
